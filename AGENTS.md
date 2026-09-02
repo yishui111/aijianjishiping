@@ -33,3 +33,11 @@
 - 改动代码后同步更新：README.md（用户向）、DEPLOY.md、本文件、avs/docs
 - 提交：`git add <具体文件>` → `git commit -m "..."` → `git push origin main`（默认只有仓库主人可 push）
 - 勿用 `git add -A`（本机有大量被 ignore/exclude 的大件与个人文件，防止误提交）
+---
+### 关键点（2026-09-02 上传整理补充）
+- 本仓库 = AI Video Studio（AI 视频智能剪辑系统），目录历史名 aijianjishiping；同目录早前的 AI 出图工作室系列（Illustrious/FLUX2/illustrious_ui/Camera/model_pad 等 ~58GB）已判定烂尾并于 2026-09 删除（仓库与磁盘同步精简）
+- 三服务 + Ollama：analyzer 8001 / executor 8002 / planner(Web) 8003 / Ollama 11434；原生模式 start_local.bat（无 Docker，推荐）
+- 大件不入库（ai-video-studio/.gitignore 屏蔽）：runtime/(venv+Ollama ~4.5GB)、models/(qwen2.5vl:3b/qwen2.5:7b/bge-m3/whisper/chinese-clip ~9.8GB)、offline/materials/output/Shotcut/analysis、*.zip/*.mp4
+- .env 曾含真实 sk- DeepSeek Key → 绝不提交，只传 .env.example(占位 sk-xxxxxxxx)；PLANNER_API_KEY 等均为 os.environ 读取勿误报
+- 根 /部署方案.md 与 素材/ 仅本机保留（已 gitignore/exclude）；换机部署按 DEPLOY.md 方式A(整目录复制)或方式B(装配)
+- avs 内更细文档：ai-video-studio/README.md、docs/implementation-plan.md(含部署手册与修复史)
