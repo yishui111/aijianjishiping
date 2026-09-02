@@ -1,0 +1,89 @@
+{
+  "h3": {
+    "kind": "t2v",
+    "name": "MiniMax H3",
+    "description": "16G 机器主力后端：文生视频，自带音频",
+    "workflow": "h3_t2v_api.json",
+    "capabilities": ["t2v", "audio"],
+    "defaults": {
+      "width": 1344,
+      "height": 768,
+      "steps": 12,
+      "cfg": 1.0,
+      "fps": 24,
+      "max_seconds": 10,
+      "output_suffix": ".mp4"
+    }
+  },
+  "wan21_t2v": {
+    "kind": "t2v",
+    "name": "Wan2.1 T2V 1.3B",
+    "description": "8G 机器保底后端：纯文生视频，无 I2V",
+    "workflow": "wan21_t2v_api.json",
+    "capabilities": ["t2v"],
+    "defaults": {
+      "width": 832,
+      "height": 480,
+      "steps": 20,
+      "cfg": 6.0,
+      "fps": 16,
+      "max_seconds": 5,
+      "output_suffix": ".mp4"
+    }
+  },
+  "wan22": {
+    "kind": "ti2v",
+    "name": "Wan2.2 TI2V 5B",
+    "description": "8G 机器主力后端：一个模型同时支持文生视频+图生视频",
+    "workflow": "wan22_ti2v_api.json",
+    "capabilities": ["t2v", "i2v"],
+    "defaults": {
+      "width": 832,
+      "height": 480,
+      "steps": 20,
+      "cfg": 6.0,
+      "fps": 16,
+      "max_seconds": 5,
+      "output_suffix": ".mp4",
+      "unet_name": "Wan2.2-TI2V-5B-Q8_0.gguf"
+    }
+  },
+  "sdxl": {
+    "kind": "t2i",
+    "name": "SDXL 文生图",
+    "description": "出关键帧用：剧本提示词 → 高质量静态图",
+    "workflow": "sdxl_t2i_api.json",
+    "capabilities": ["t2i"],
+    "defaults": {
+      "width": 832,
+      "height": 480,
+      "steps": 25,
+      "cfg": 7.0,
+      "output_suffix": ".png"
+    }
+  },
+  "restore": {
+    "kind": "restore",
+    "name": "图片/视频修复",
+    "description": "超分（4x-UltraSharp）/ 去水印去物 inpaint（SDXL），零新增模型",
+    "workflow": "restore_upscale_api.json",
+    "capabilities": ["restore", "upscale", "inpaint"],
+    "defaults": {
+      "output_suffix": ".png"
+    }
+  },
+  "flux": {
+    "kind": "t2i",
+    "name": "FLUX.1-schnell 文生图",
+    "description": "关键帧升级：4 步出图，画质远超 SDXL（单文件 fp8 ~7.2GB）",
+    "workflow": "flux_t2i_api.json",
+    "capabilities": ["t2i"],
+    "defaults": {
+      "width": 768,
+      "height": 448,
+      "steps": 4,
+      "cfg": 1.0,
+      "output_suffix": ".png"
+    }
+  }
+}

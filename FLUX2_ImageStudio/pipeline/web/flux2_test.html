@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLUX2 出图工作台</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  header { padding: 14px 24px; background: #1e293b; border-bottom: 1px solid #334155; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; }
+  .badge { font-size: 12px; padding: 3px 10px; border-radius: 12px; }
+  .badge.ok { background: #052e16; color: #86efac; }
+  .badge.bad { background: #450a0a; color: #fca5a5; }
+  #tabs { display: flex; gap: 8px; padding: 14px 24px 0; }
+  .tab { background: #1e293b; border: 1px solid #334155; color: #94a3b8; border-radius: 10px 10px 0 0; padding: 10px 22px; cursor: pointer; font-size: 14px; }
+  .tab.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+  #main { max-width: 1000px; margin: 0 auto; padding: 20px 24px 60px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+  .card h3 { font-size: 15px; margin-bottom: 12px; color: #93c5fd; }
+  label { display: block; font-size: 13px; color: #94a3b8; margin: 10px 0 4px; }
+  textarea { width: 100%; background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 10px; padding: 12px; font-size: 14px; font-family: inherit; resize: vertical; min-height: 80px; }
+  input[type=text], input[type=number] { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 8px; padding: 8px 12px; font-size: 14px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .row label { margin: 0; }
+  button { background: #2563eb; color: #fff; border: none; border-radius: 10px; padding: 10px 30px; font-size: 15px; font-weight: bold; cursor: pointer; margin-top: 14px; }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #475569; cursor: not-allowed; }
+  .status { font-size: 13px; color: #7dd3fc; margin-top: 10px; min-height: 20px; }
+  .imgbox { background: #111c2e; border: 1px solid #334155; border-radius: 12px; padding: 12px; margin-top: 14px; }
+  .imgbox .cap { font-size: 12px; color: #94a3b8; margin-bottom: 8px; }
+  .imgbox img { max-width: 100%; max-height: 420px; border-radius: 8px; display: block; }
+  #refArea { display: flex; align-items: center; gap: 14px; margin: 10px 0; }
+  #refPreview { width: 96px; height: 96px; object-fit: cover; border-radius: 10px; border: 2px solid #475569; display: none; }
+  .upload-btn { display: inline-block; background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 8px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
+  .upload-btn:hover { background: #475569; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .chip { background: #0f172a; border: 1px solid #334155; color: #94a3b8; border-radius: 14px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+  .chip:hover { border-color: #3b82f6; color: #fff; }
+  .note { font-size: 12px; color: #64748b; margin-top: 8px; line-height: 1.7; }
+  .err { color: #fca5a5; font-size: 13px; margin-top: 10px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ FLUX2 出图工作台</h1>
+  <span class="badge" id="bTask">任务: -</span>
+</header>
+
+<div id="tabs">
+  <div class="tab active" data-t="t2i" onclick="switchTab('t2i')">🖼 文生图</div>
+  <div class="tab" data-t="edit" onclick="switchTab('edit')">🎭 锁角色编辑</div>
+</div>
+
+<div id="main">
+  <!-- ============ 文生图 ============ -->
+  <div class="panel active" id="pan-t2i">
+    <div class="card">
+      <h3>🖼 FLUX.2 文生图</h3>
+      <label>提示词（支持中文，自动理解）</label>
+      <textarea id="t2i_prompt" placeholder="例如：一个穿白色连衣裙的女孩站在樱花树下，阳光透过花瓣洒落，柔焦，电影感，高清细节"></textarea>
+      <div class="chips" id="t2i_chips"></div>
+      <div class="row" style="margin-top:14px">
+        <label>宽 <input type="number" id="t2i_w" value="832" style="width:90px"></label>
+        <label>高 <input type="number" id="t2i_h" value="480" style="width:90px"></label>
+        <label>步数 <input type="number" id="t2i_steps" value="20" style="width:80px"></label>
+        <label>CFG <input type="number" id="t2i_cfg" value="3.5" step="0.1" style="width:80px"></label>
+        <label>Seed <input type="text" id="t2i_seed" placeholder="留空随机" style="width:120px"></label>
+      </div>
+      <button onclick="runT2I()">🎨 生成图片</button>
+      <div id="status_t2i" class="status"></div>
+      <div id="result_t2i"></div>
+    </div>
+  </div>
+
+  <!-- ============ 锁角色编辑 ============ -->
+  <div class="panel" id="pan-edit">
+    <div class="card">
+      <h3>🎭 FLUX.2 锁角色图像编辑（ReferenceLatent）</h3>
+      <div class="note">上传角色设定图 → 写编辑指令（改姿势/换场景/换服装等）→ FLUX.2 在保持角色外观的前提下重绘。</div>
+      <div id="refArea">
+        <label class="upload-btn" onclick="document.getElementById('edit_ref').click()">📤 上传参考图</label>
+        <input type="file" id="edit_ref" accept="image/*" style="display:none" onchange="onRefChange(this)">
+        <img id="refPreview" alt="参考图预览">
+        <span id="refName" style="font-size:12px;color:#64748b"></span>
+      </div>
+      <label>编辑指令</label>
+      <textarea id="edit_prompt" placeholder="例如：让角色坐在咖啡馆窗边，手里端着一杯拿铁，同样的发型和服装，电影光线"></textarea>
+      <div class="chips" id="edit_chips"></div>
+      <div class="row" style="margin-top:14px">
+        <label>步数 <input type="number" id="edit_steps" value="24" style="width:80px"></label>
+        <label>CFG <input type="number" id="edit_cfg" value="5.0" step="0.1" style="width:80px"></label>
+        <label>Seed <input type="text" id="edit_seed" placeholder="留空随机" style="width:120px"></label>
+      </div>
+      <button onclick="runEdit()">🎭 生成编辑图</button>
+      <div id="status_edit" class="status"></div>
+      <div id="result_edit"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const PRESETS = {
+  t2i: ["一个穿白裙的女孩站在樱花树下，柔焦，电影感", "赛博朋克城市夜景，霓虹灯，雨夜街道，电影感", "中国古风女子，汉服，水墨背景，意境", "一只橘猫趴在窗台上晒太阳，毛发光泽，特写"],
+  edit: ["让角色坐在咖啡馆窗边喝拿铁，同样的发型服装，电影光线", "让角色转过头微笑，特写，同样的服装", "给角色换上红色连衣裙，站在海边，同样的脸"],
+};
+const chipsEl = { t2i: 't2i_chips', edit: 'edit_chips' };
+for (const k of Object.keys(chipsEl)) {
+  const el = document.getElementById(chipsEl[k]);
+  if (!el) continue;
+  PRESETS[k].forEach(p => {
+    const c = document.createElement('span');
+    c.className = 'chip';
+    c.textContent = p;
+    c.onclick = () => { document.getElementById(k + '_prompt').value = p; };
+    el.appendChild(c);
+  });
+}
+
+let refData = null;
+let refName = '';
+let pollTimer = null;
+
+function switchTab(t) {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.t === t));
+  document.querySelectorAll('.panel').forEach(x => x.classList.toggle('active', x.id === 'pan-' + t));
+}
+
+function onRefChange(input) {
+  const f = input.files[0];
+  if (!f) return;
+  refName = f.name;
+  refData = f;
+  const url = URL.createObjectURL(f);
+  document.getElementById('refPreview').src = url;
+  document.getElementById('refPreview').style.display = 'block';
+  document.getElementById('refName').textContent = f.name;
+}
+
+function setStatus(tag, msg, cls) {
+  const el = document.getElementById('status_' + tag);
+  el.innerHTML = msg;
+  el.className = cls || '';
+}
+
+function poll(id, tag, onDone) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const r = await fetch('/api/task?id=' + id);
+    const t = await r.json();
+    document.getElementById('bTask').textContent = '任务: ' + t.status + (t.status === 'running' ? ' ' + (t.message || '') : '');
+    if (t.status === 'done' || t.status === 'error') {
+      clearInterval(pollTimer);
+      onDone(t);
+    }
+  }, 2500);
+}
+
+async function runT2I() {
+  const body = {
+    prompt: document.getElementById('t2i_prompt').value.trim(),
+    width: +document.getElementById('t2i_w').value || 832,
+    height: +document.getElementById('t2i_h').value || 480,
+    steps: +document.getElementById('t2i_steps').value || 20,
+    cfg: +document.getElementById('t2i_cfg').value || 3.5,
+    seed: document.getElementById('t2i_seed').value.trim() || null,
+  };
+  if (!body.prompt) { setStatus('t2i', '请先输入提示词', 'err'); return; }
+  setStatus('t2i', '⏳ 生成中（FLUX.2 首次加载模型约 1-2 分钟）…');
+  const r = await fetch('/api/t2i', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json();
+  poll(j.id, 't2i', t => {
+    if (t.status === 'error') { setStatus('t2i', '❌ ' + t.message, 'err'); return; }
+    setStatus('t2i', '✅ 生成完成');
+    document.getElementById('result_t2i').innerHTML =
+      `<div class="imgbox"><div class="cap">FLUX.2 · ${body.width}x${body.height} · ${body.steps}步</div><img src="${t.result}?t=${Date.now()}"></div>`;
+  });
+}
+
+async function runEdit() {
+  const prompt = document.getElementById('edit_prompt').value.trim();
+  if (!refData) { setStatus('edit', '请先上传参考图', 'err'); return; }
+  if (!prompt) { setStatus('edit', '请先输入编辑指令', 'err'); return; }
+  setStatus('edit', '⏳ 生成中（锁角色编辑，稍慢）…');
+  const fd = new FormData();
+  fd.append('image', refData, refName);
+  fd.append('prompt', prompt);
+  fd.append('steps', document.getElementById('edit_steps').value || '24');
+  fd.append('cfg', document.getElementById('edit_cfg').value || '5.0');
+  const seed = document.getElementById('edit_seed').value.trim();
+  if (seed) fd.append('seed', seed);
+  const r = await fetch('/api/edit', { method: 'POST', body: fd });
+  const j = await r.json();
+  if (j.error) { setStatus('edit', '❌ ' + j.error, 'err'); return; }
+  poll(j.id, 'edit', t => {
+    if (t.status === 'error') { setStatus('edit', '❌ ' + t.message, 'err'); return; }
+    setStatus('edit', '✅ 编辑完成');
+    document.getElementById('result_edit').innerHTML =
+      `<div class="imgbox"><div class="cap">FLUX.2 编辑结果（参考图见上方预览）</div><img src="${t.result}?t=${Date.now()}"></div>`;
+  });
+}
+</script>
+</body>
+</html>

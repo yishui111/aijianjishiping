@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>镜头工作台（JSON 控制）</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", sans-serif; background: #0c1414; color: #d8e8e8; min-height: 100vh; }
+  header { padding: 14px 24px; background: #162828; border-bottom: 1px solid #2a4a4a; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; }
+  .badge { font-size: 12px; padding: 3px 10px; border-radius: 12px; background: #1e3a5f; color: #93c5fd; }
+  #main { max-width: 1100px; margin: 0 auto; padding: 20px 24px 60px; }
+  .card { background: #162828; border: 1px solid #2a4a4a; border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+  .card h3 { font-size: 15px; margin-bottom: 12px; color: #5eead4; }
+  .note { font-size: 12px; color: #7a9a9a; margin: 8px 0; line-height: 1.7; }
+  button { background: #0d9488; color: #fff; border: none; border-radius: 10px; padding: 9px 22px; font-size: 14px; font-weight: bold; cursor: pointer; margin: 6px 6px 0 0; }
+  button:hover { background: #0f766e; }
+  button.sec { background: #334155; }
+  button:disabled { background: #475569; cursor: not-allowed; }
+  .upload-btn { display: inline-block; background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 8px; padding: 8px 16px; font-size: 13px; cursor: pointer; margin: 4px 6px 4px 0; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+  .row label { font-size: 12px; color: #7a9a9a; }
+  input[type=number] { background: #0c1414; color: #d8e8e8; border: 1px solid #2a4a4a; border-radius: 6px; padding: 5px 8px; width: 80px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  th, td { border: 1px solid #2a4a4a; padding: 7px 9px; text-align: left; }
+  th { background: #1a3030; color: #5eead4; }
+  tr:hover td { background: #1a3030; }
+  video { max-width: 100%; max-height: 300px; border-radius: 8px; background: #000; display: block; margin-top: 8px; }
+  .thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; }
+  .status { font-size: 13px; color: #5eead4; margin-top: 10px; min-height: 20px; }
+  .err { color: #fca5a5; }
+  .ok { color: #86efac; }
+  #segList { margin-top: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎥 镜头工作台（JSON 控制 · Ken Burns）</h1>
+  <span class="badge" id="bStatus">未加载</span>
+</header>
+
+<div id="main">
+  <div class="card">
+    <h3>① 加载镜头清单（JSON + 图片）</h3>
+    <div class="note">
+      选择镜头清单 JSON 和对应图片（可多选图片文件），清单里的 image 字段用图片文件名即可。
+      JSON 格式：segments 数组，每段含 image / camera(zoom_in等) / camera_target(face或full_body) / duration(秒)。
+    </div>
+    <label class="upload-btn" onclick="document.getElementById('fJson').click()">📄 选择清单 JSON</label>
+    <input type="file" id="fJson" accept=".json,application/json" style="display:none" onchange="this.nextElementSibling.textContent = this.files[0] ? this.files[0].name : ''"><span style="font-size:12px;color:#7a9a9a"></span>
+    <label class="upload-btn" onclick="document.getElementById('fImgs').click()">🖼 选择图片（可多选）</label>
+    <input type="file" id="fImgs" accept="image/*" multiple style="display:none" onchange="this.nextElementSibling.textContent = this.files.length + ' 张'"><span style="font-size:12px;color:#7a9a9a"></span>
+    <div class="row">
+      <label>宽 <input type="number" id="w" value="832"></label>
+      <label>高 <input type="number" id="h" value="480"></label>
+      <label>fps <input type="number" id="fps" value="24"></label>
+    </div>
+    <button onclick="doLoad()">📥 加载清单</button>
+    <div id="loadStatus" class="status"></div>
+  </div>
+
+  <div class="card">
+    <h3>② 生成镜头</h3>
+    <button onclick="genAll()">⚡ 全部生成</button>
+    <button class="sec" onclick="doConcat()">🎬 拼接成片</button>
+    <div id="genStatus" class="status"></div>
+  </div>
+
+  <div class="card">
+    <h3>③ 段落列表与预览</h3>
+    <div id="segList"><div class="note">加载清单后显示</div></div>
+  </div>
+</div>
+
+<script>
+let session = null;
+let pollTimer = null;
+
+function setStatus(el, msg, cls) {
+  const node = document.getElementById(el);
+  node.innerHTML = msg;
+  node.className = 'status ' + (cls || '');
+}
+
+async function doLoad() {
+  const jf = document.getElementById('fJson').files[0];
+  if (!jf) { setStatus('loadStatus', '请选择 JSON 清单', 'err'); return; }
+  const imgs = document.getElementById('fImgs').files;
+  const fd = new FormData();
+  fd.append('json', jf);
+  fd.append('name', jf.name.replace(/\.json$/i, ''));
+  fd.append('width', document.getElementById('w').value);
+  fd.append('height', document.getElementById('h').value);
+  fd.append('fps', document.getElementById('fps').value);
+  for (const f of imgs) fd.append('img_' + f.name, f);
+  setStatus('loadStatus', '⏳ 加载中…');
+  const r = await fetch('/api/load', { method: 'POST', body: fd });
+  const j = await r.json();
+  if (j.error) { setStatus('loadStatus', '❌ ' + j.error, 'err'); return; }
+  session = j;
+  document.getElementById('bStatus').textContent = '已加载: ' + j.name + ' (' + j.segments + ' 段)';
+  setStatus('loadStatus', '✅ 加载成功，' + j.segments + ' 段', 'ok');
+  await refreshSegs();
+}
+
+async function refreshSegs() {
+  const r = await fetch('/api/session');
+  const s = await r.json();
+  const segs = (s.manifest && (s.manifest.segments || [])) || [];
+  const clipsDir = '/clips/' + s.name + '/';
+  let html = '<table><tr><th>#</th><th>场景</th><th>台词</th><th>镜头</th><th>构图</th><th>时长</th><th>预览</th></tr>';
+  segs.forEach((seg, i) => {
+    const cam = seg.camera || 'zoom_in';
+    const tgt = seg.camera_target || 'full_body';
+    html += `<tr>
+      <td>${seg.id || (i+1)}</td>
+      <td>${seg.scene || ''}</td>
+      <td>${(seg.line || '').slice(0, 16)}</td>
+      <td>${cam}</td>
+      <td>${tgt}</td>
+      <td>${seg.duration || 4}s</td>
+      <td><button onclick="genOne(${i})">生成</button> <video id="v${i}" controls style="display:none;max-height:120px"></video></td>
+    </tr>`;
+  });
+  html += '</table>';
+  document.getElementById('segList').innerHTML = html;
+}
+
+async function genOne(idx) {
+  const r = await fetch('/api/gen_segment', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idx, width: +document.getElementById('w').value,
+      height: +document.getElementById('h').value, fps: +document.getElementById('fps').value })
+  });
+  const j = await r.json();
+  poll(j.id, t => {
+    if (t.status === 'error') { setStatus('genStatus', '❌ ' + t.message, 'err'); return; }
+    const v = document.getElementById('v' + idx);
+    v.src = t.result + '?t=' + Date.now();
+    v.style.display = 'block';
+    setStatus('genStatus', '✅ 段' + (idx+1) + ' 生成完成', 'ok');
+  });
+}
+
+async function genAll() {
+  const r = await fetch('/api/gen_all', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ width: +document.getElementById('w').value,
+      height: +document.getElementById('h').value, fps: +document.getElementById('fps').value })
+  });
+  const j = await r.json();
+  setStatus('genStatus', '⏳ 逐段生成中…');
+  poll(j.id, async t => {
+    if (t.status === 'error') { setStatus('genStatus', '❌ ' + t.message, 'err'); return; }
+    setStatus('genStatus', '✅ ' + t.message, 'ok');
+    await refreshSegs();
+    // 刷新后显示所有已生成视频
+    const s = await (await fetch('/api/session')).json();
+    (s.manifest && (s.manifest.segments || [])).forEach((seg, i) => {
+      const v = document.getElementById('v' + i);
+      if (v) { v.src = '/clips/' + s.name + '/cam_' + String(seg.id || (i+1)).padStart(3,'0') + '.mp4?t=' + Date.now(); v.style.display = 'block'; }
+    });
+  });
+}
+
+async function doConcat() {
+  const r = await fetch('/api/concat', { method: 'POST' });
+  const j = await r.json();
+  setStatus('genStatus', '⏳ 拼接中…');
+  poll(j.id, t => {
+    if (t.status === 'error') { setStatus('genStatus', '❌ ' + t.message, 'err'); return; }
+    setStatus('genStatus', '✅ 成片生成完成', 'ok');
+    let v = document.getElementById('finalVideo');
+    if (!v) {
+      v = document.createElement('video');
+      v.id = 'finalVideo'; v.controls = true;
+      document.getElementById('segList').insertAdjacentHTML('beforebegin',
+        '<div class="card"><h3>🎬 成片</h3><video id="finalVideo" controls></video></div>');
+      v = document.getElementById('finalVideo');
+    }
+    v.src = t.result + '?t=' + Date.now();
+  });
+}
+
+function poll(id, onDone) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const r = await fetch('/api/task?id=' + id);
+    const t = await r.json();
+    document.getElementById('bStatus').textContent = '任务: ' + t.status + (t.status === 'running' ? ' ' + (t.message || '') : '');
+    if (t.status === 'done' || t.status === 'error') {
+      clearInterval(pollTimer);
+      onDone(t);
+    }
+  }, 2000);
+}
+</script>
+</body>
+</html>
