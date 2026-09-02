@@ -1,0 +1,1304 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Video Studio - 剪辑工作台</title>
+<style>
+  :root { --bg:#0f1420; --panel:#171e2e; --panel2:#1d2739; --border:#2c3a55; --text:#e8ecf4; --sub:#9fb3d1; --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:"Microsoft YaHei",system-ui,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+  .wrap { max-width:1080px; margin:0 auto; padding:20px 16px 60px; }
+  header { display:flex; align-items:center; gap:12px; padding:8px 0 20px; border-bottom:1px solid var(--border); margin-bottom:20px; }
+  header h1 { font-size:22px; }
+  header .badge { font-size:12px; color:var(--sub); background:var(--panel2); padding:4px 10px; border-radius:20px; }
+  .steps { display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; }
+  .step { flex:1; min-width:150px; background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:10px 14px; font-size:13px; color:var(--sub); }
+  .step b { display:block; font-size:14px; color:var(--text); margin-bottom:2px; }
+  .step.active { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  .step.done { border-color:var(--ok); }
+  .step .n { display:inline-block; width:18px; height:18px; line-height:18px; text-align:center; border-radius:50%; background:var(--panel2); color:var(--sub); font-size:11px; margin-right:6px; }
+  .step.done .n { background:var(--ok); color:#fff; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px; margin-bottom:16px; }
+  .card h2 { font-size:16px; margin-bottom:12px; display:flex; align-items:center; gap:8px; }
+  .card h2 .hint { font-size:12px; color:var(--sub); font-weight:normal; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; }
+  .btn { padding:9px 20px; border-radius:8px; border:0; background:var(--accent); color:#fff; font-size:14px; cursor:pointer; }
+  .btn:hover { filter:brightness(1.1); }
+  .btn:disabled { opacity:.45; cursor:not-allowed; }
+  .btn.secondary { background:var(--panel2); color:var(--text); border:1px solid var(--border); }
+  .btn.ok { background:var(--ok); }
+  .btn.sm { padding:5px 12px; font-size:12px; }
+  select, input[type=text] { background:var(--panel2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:14px; }
+  select { min-width:220px; }
+  .muted { color:var(--sub); font-size:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:10px; margin-top:10px; }
+  .mat { background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:12px; cursor:pointer; transition:border-color .15s; position:relative; }
+  .mat:hover { border-color:var(--accent); }
+  .mat.selected { border-color:var(--ok); box-shadow:0 0 0 1px var(--ok) inset; }
+  .mat .name { font-size:13px; font-weight:bold; word-break:break-all; }
+  .mat .meta { font-size:11px; color:var(--sub); margin-top:4px; }
+  .mat .sum { font-size:12px; color:var(--text); margin-top:6px; line-height:1.5; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .mat .tags span { display:inline-block; background:rgba(59,130,246,.15); color:#93c5fd; border-radius:4px; padding:1px 6px; font-size:10px; margin:4px 4px 0 0; }
+  .mat .ck { position:absolute; top:10px; right:10px; width:18px; height:18px; border:2px solid var(--border); border-radius:4px; }
+  .mat.selected .ck { background:var(--ok); border-color:var(--ok); }
+  .mat.selected .ck::after { content:"✓"; position:absolute; top:-2px; left:2px; color:#fff; font-size:13px; }
+  .mat .st { display:inline-block; font-size:10px; padding:2px 8px; border-radius:10px; margin-bottom:4px; }
+  .st.done { background:rgba(34,197,94,.15); color:var(--ok); }
+  .st.pending { background:rgba(245,158,11,.15); color:var(--warn); }
+  .folder { display:flex; align-items:center; gap:12px; padding:12px 14px; background:var(--panel2); border:1px solid var(--border); border-radius:10px; margin-bottom:8px; cursor:pointer; transition:border-color .15s; }
+  .folder:hover { border-color:var(--accent); }
+  .folder .fname { font-weight:bold; font-size:14px; flex:1; }
+  .folder .fmeta { font-size:12px; color:var(--sub); }
+  .folder .fbar { width:90px; height:6px; background:var(--panel); border-radius:3px; overflow:hidden; }
+  .folder .fbar i { display:block; height:100%; background:var(--ok); border-radius:3px; }
+  .folder .fstat { font-size:12px; color:var(--ok); min-width:70px; text-align:right; }
+  .folder .fstat.pending { color:var(--warn); }
+  #log { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px; min-height:200px; max-height:420px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; font-size:13px; }
+  .msg { margin-bottom:8px; padding:8px 12px; border-radius:8px; line-height:1.6; }
+  .msg.user { background:#2b4a78; }
+  .msg.ai { background:#22304a; }
+  .msg.tool { background:var(--panel2); color:var(--sub); font-size:12px; }
+  .msg.err { background:rgba(239,68,68,.12); color:#fca5a5; border:1px solid rgba(239,68,68,.3); }
+  .msg.ok { background:rgba(34,197,94,.1); color:#86efac; border:1px solid rgba(34,197,94,.3); }
+  textarea { width:100%; min-height:70px; border-radius:8px; padding:10px; background:var(--panel2); color:var(--text); border:1px solid var(--border); font-size:14px; font-family:inherit; resize:vertical; }
+  .chatbar { display:flex; gap:10px; margin-top:10px; }
+  .chatbar textarea { flex:1; }
+  .selbar { display:flex; align-items:center; gap:10px; margin:10px 0 4px; flex-wrap:wrap; }
+  .selbar .count { font-size:13px; color:var(--sub); }
+  .hidden { display:none; }
+  .loading { display:inline-block; width:14px; height:14px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; vertical-align:-2px; margin-right:6px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .toast { position:fixed; top:20px; right:20px; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:10px 16px; font-size:13px; z-index:99; display:none; }
+  .toast.show { display:block; }
+  .mat .pv-btn { position:absolute; top:34px; right:10px; padding:3px 10px; font-size:11px; background:rgba(59,130,246,.15); color:#93c5fd; border:1px solid var(--border); }
+  .mat .pv-btn:hover { background:var(--accent); color:#fff; }
+  .snip { background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:10px; margin-bottom:10px; }
+  .snip.del { opacity:.45; }
+  .snip-head { display:flex; align-items:center; gap:10px; margin-bottom:4px; flex-wrap:wrap; }
+  .ledger { background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:10px; margin-bottom:8px; display:flex; gap:10px; align-items:flex-start; }
+  .ledger .thumb { width:120px; border-radius:6px; cursor:pointer; flex-shrink:0; }
+  .ledger .info { flex:1; min-width:0; }
+  .ledger .score { color:var(--ok); font-weight:bold; }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.62); display:none; align-items:center; justify-content:center; z-index:60; }
+  .modal.show { display:flex; }
+  .modal-box { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px; width:min(780px,94vw); max-height:92vh; overflow-y:auto; }
+  .modal-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  .modal-head b { flex:1; font-size:15px; word-break:break-all; }
+  #pv-video, #pv-img { width:100%; max-height:50vh; background:#000; border-radius:8px; display:block; }
+  #pv-img { object-fit:contain; }
+  .pv-times { display:flex; gap:12px; align-items:center; font-size:12px; color:var(--sub); margin-top:8px; flex-wrap:wrap; }
+  .pv-bar { display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+  .pv-field { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text); }
+  .pv-field input { width:92px; padding:6px 8px; font-size:13px; }
+  #pv-result { margin-top:12px; }
+  #pv-result .msg { margin-top:8px; }
+  #pv-result video { width:100%; border-radius:8px; margin-top:8px; background:#000; }
+  .modelbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:8px 14px; margin-bottom:16px; font-size:12px; }
+  .modelbar b { color:var(--warn); }
+  .modelbar b.loaded { color:var(--ok); }
+  .modelbar .loading { vertical-align:-2px; }
+  .tl-clip { transition:border-color .12s; }
+  .tl-clip:hover { border-color:var(--accent) !important; }
+  .tl-clip.sel { border-color:var(--warn) !important; box-shadow:0 0 0 1px var(--warn) inset; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🎬 AI Video Studio</h1>
+    <span class="badge">素材分析 + AI 剪辑</span>
+  </header>
+
+  <div class="modelbar" id="model-bar">
+    <span class="muted">🧠 分析模型（qwen2.5vl:3b）：</span>
+    <b id="model-state">未加载</b>
+    <span class="muted" id="model-detail">按需加载——点「分析」才启动，其他操作自动释放显存</span>
+  </div>
+
+  <div class="steps">
+    <div class="step active" id="st1"><span class="n">1</span><b>选择素材目录</b>从 materials 中选择要分析的文件夹</div>
+    <div class="step" id="st2"><span class="n">2</span><b>分析素材</b>AI 自动理解画面、语音、场景</div>
+    <div class="step" id="st3"><span class="n">3</span><b>查看结果</b>确认哪些目录已分析完成</div>
+    <div class="step" id="st4"><span class="n">4</span><b>勾选素材对话</b>只针对选中的素材进行剪辑</div>
+  </div>
+
+  <!-- 步骤1+3：目录列表 -->
+  <div class="card" id="card-folders">
+    <h2>📁 素材目录 <span class="hint" id="folder-hint"></span></h2>
+    <div id="folder-loading" class="muted"><span class="loading"></span>加载目录...</div>
+    <div id="folder-list"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn" id="btn-scan" onclick="scanFolder()">▶ 分析所选目录</button>
+      <button class="btn secondary" id="btn-refresh" onclick="loadFolders()">🔄 刷新状态</button>
+      <button class="btn secondary" id="btn-goto-mats" onclick="gotoMaterials()" disabled>下一步：选择素材 →</button>
+    </div>
+    <div id="scan-progress" class="muted" style="margin-top:10px"></div>
+
+    <h2 style="margin-top:18px">🎬 时间线剪辑 <span class="hint">选文件夹 → 勾选素材（可多选）→ 全部合并进时间线，分割/删除/拼接出片</span></h2>
+    <div class="selbar">
+      <select id="edit-folder-sel" style="min-width:180px"><option value="">（先选文件夹）</option></select>
+      <span class="count" id="edit-sel-count">已勾选 0 个素材</span>
+      <button class="btn ok" id="btn-open-edit" onclick="openEditFromSel()" disabled>🎬 开始剪辑（合并勾选）</button>
+    </div>
+    <div id="edit-file-list" class="grid" style="margin-top:8px"></div>
+    <div id="edit-entry-hint" class="muted" style="margin-top:6px">① 选文件夹 ② 勾选要剪的素材（可多选）③ 点「开始剪辑」——每个素材在时间线上是一段，可分割/删除/拼接。</div>
+
+    <h2 style="margin-top:18px">⚡ 免分析批量剪辑 <span class="hint">选中文件夹后，按时间规则批量切（去片头片尾），不用分析</span></h2>
+    <div class="selbar">
+      <span class="muted">开头</span>
+      <input type="number" id="bh" placeholder="时" style="width:58px" min="0">
+      <input type="number" id="bm" placeholder="分" style="width:58px" min="0" max="59">
+      <input type="number" id="bs" placeholder="秒" style="width:58px" min="0" max="59">
+      <span class="muted">结束</span>
+      <input type="number" id="eh" placeholder="时" style="width:58px" min="0">
+      <input type="number" id="em" placeholder="分" style="width:58px" min="0" max="59">
+      <input type="number" id="es" placeholder="秒" style="width:58px" min="0" max="59">
+      <select id="batch-res">
+        <option value="原样">原样（无损·秒级）</option>
+        <option value="720p">720p（转码·慢）</option>
+        <option value="1080p">1080p（转码·慢）</option>
+      </select>
+      <button class="btn ok" id="btn-batch" onclick="startBatch()">⚡ 批量剪</button>
+    </div>
+    <div class="muted" style="margin-top:6px">填 时/分/秒（不填算 0）。<b>结束三个都空 = 到结尾</b>。例：开头 0 分 1 秒 30 → 去片头 1分30秒；开头 0 分 3 秒 0、结束空 → 去头 3 分钟；开头 0 分 1 秒 0、结束 0 分 5 秒 0 → 保留 1~5 分钟。</div>
+    <div id="batch-status" class="muted" style="margin-top:8px"></div>
+    <div id="batch-list"></div>
+  </div>
+
+  <!-- 步骤4：素材选择 + 对话 -->
+  <div class="card hidden" id="card-chat">
+    <h2>🎞️ 素材选择与 AI 对话 <span class="hint" id="mat-hint"></span></h2>
+    <div class="selbar">
+      <button class="btn secondary sm" onclick="backToFolders()">← 返回目录</button>
+      <span class="count" id="sel-count">已选 0 个素材</span>
+      <button class="btn secondary sm" id="btn-sel-all" onclick="toggleSelectAll()">全选</button>
+      <button class="btn secondary sm" id="btn-sel-analyzed" onclick="selectAnalyzed()">选已分析</button>
+      <button class="btn ok sm" id="btn-merge-tl" onclick="openEditSelected()" disabled>🎬 合并到时间线剪辑</button>
+      <button class="btn secondary sm" onclick="refreshMaterials()">🔄 刷新</button>
+    </div>
+    <div class="muted" style="margin-top:4px">💡 勾选多个素材后点「🎬 合并到时间线剪辑」——每个素材在时间线上是一段，可分割/删除/拼接出片。</div>
+    <div id="mat-loading" class="muted hidden"><span class="loading"></span>加载素材...</div>
+    <div class="grid" id="mat-list"></div>
+
+    <h2 style="margin-top:22px">📜 剧本批量剪辑 <span class="hint">写剧本 → 向量匹配场记 → 出片</span></h2>
+    <div class="chatbar" style="margin-bottom:8px">
+      <textarea id="script-text" placeholder="直接写剧本文字，系统自动拆镜头、向量匹配场记、出片。如：孙悟空和唐僧对话。官员向皇后行礼。宗教祭祀的庄严场面。"></textarea>
+    </div>
+    <div class="selbar">
+      <button class="btn ok" onclick="scriptTextClip()">🎬 文本剧本直接剪</button>
+      <span class="count" id="script-text-status"></span>
+    </div>
+    <div id="script-text-result"></div>
+    <div class="chatbar" style="margin-bottom:8px;margin-top:10px">
+      <textarea id="script-input" placeholder="（进阶）粘贴剧本 JSON，或点「用线上生成剧本」"></textarea>
+    </div>
+    <div class="selbar">
+      <button class="btn" onclick="genScript()">✨ 用线上生成剧本</button>
+      <button class="btn" onclick="scriptMatch()">🎯 按剧本匹配场景</button>
+      <span class="count" id="script-status"></span>
+    </div>
+    <div class="muted" style="margin-top:6px">💡 剧本格式：{"title":"剧本名","shots":[{"id":1,"prompt":"画面描述","dialogue":"对白","duration":8}]}。「按剧本匹配场景」会把每个镜头的候选场景列到下方场记单里，勾选后点「剪勾选的」出片。</div>
+
+    <h2 style="margin-top:22px">📋 场记单剪辑 <span class="hint">搜素材库 → 勾选场景 → 剪勾选的（时间戳来自文档，最可靠）</span></h2>
+    <div class="chatbar" style="margin-bottom:8px">
+      <input type="text" id="ledger-query" placeholder="边输入边搜整个素材库，如：孙悟空和唐僧对话 / 蓝色的衣服 / 吵架" style="flex:1" oninput="ledgerDebounced()">
+      <button class="btn" onclick="ledgerSearch()">🔍 搜索</button>
+      <button class="btn secondary" onclick="ledgerAll()">📋 全部场记</button>
+    </div>
+    <div class="selbar" style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 12px">
+      <span class="count" id="ledger-count">已勾选 0 段</span>
+      <button class="btn ok" id="btn-clip-ledger" onclick="clipSelected()" disabled>✂️ 剪勾选的</button>
+      <span class="muted" id="ledger-hint"></span>
+    </div>
+    <div id="ledger-list"></div>
+    <div id="ledger-result"></div>
+
+    <h3 style="margin-top:16px">📜 剧本序列 <span class="hint">搜索结果点「➕ 入剧本」边搜边攒，可调序/删除/重复用，最后按序列出片</span></h3>
+    <div id="script-seq"></div>
+    <div class="selbar">
+      <button class="btn ok" id="btn-seq-clip" onclick="clipSeq()" disabled>🎬 按剧本出片</button>
+      <span class="count" id="seq-count">0 条</span>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="pv-modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <b id="pv-name"></b>
+      <span class="muted" id="pv-type"></span>
+      <button class="btn sm secondary" onclick="closePreview()">✕ 关闭</button>
+    </div>
+    <video id="pv-video" controls playsinline preload="metadata" class="hidden"></video>
+    <img id="pv-img" class="hidden" alt="">
+    <div class="pv-times" id="pv-times">
+      <span>⏱ 当前 <b id="pv-cur">00:00</b></span>
+      <span>/ 总长 <b id="pv-dur">00:00</b></span>
+      <span class="muted">（可直接拖动进度条定位，也可在播放时点下面的按钮取时间）</span>
+    </div>
+    <div class="pv-bar" id="pv-bar">
+      <span class="pv-field">起点 <input id="pv-start" type="text" value="0" title="秒 或 分:秒，如 12 或 1:30"></span>
+      <button class="btn sm secondary" onclick="pvSetStart()">⏺ 设为起点</button>
+      <span class="pv-field">终点 <input id="pv-end" type="text" placeholder="留空=到结尾" title="秒 或 分:秒，留空=到素材结尾"></span>
+      <button class="btn sm secondary" onclick="pvSetEnd()">⏹ 设为终点</button>
+      <button class="btn sm secondary" onclick="pvPlayRange()">▶ 试播区间</button>
+    </div>
+    <div class="pv-bar" id="pv-clipbar">
+      <span class="muted">输出分辨率</span>
+      <select id="pv-res">
+        <option value="720p">720p</option>
+        <option value="1080p">1080p</option>
+        <option value="原样">原样（不缩放）</option>
+      </select>
+      <button class="btn ok" id="btn-pvclip" onclick="pvClip()">✂️ 剪辑此区间并出片</button>
+      <span class="muted">（只处理当前素材，不经过对话，直接 ffmpeg 出片）</span>
+    </div>
+    <div id="pv-result"></div>
+  </div>
+</div>
+
+<div class="modal" id="edit-modal">
+  <div class="modal-box" style="width:min(1200px,97vw)">
+    <div class="modal-head">
+      <b>🎬 时间线剪辑</b>
+      <span class="muted" id="edit-name"></span>
+      <button class="btn sm secondary" onclick="closeEdit()">✕ 关闭</button>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap">
+      <div style="flex:1;min-width:320px">
+        <video id="edit-video" controls playsinline preload="metadata" style="width:100%;max-height:44vh;background:#000;border-radius:10px"></video>
+      </div>
+      <div style="width:220px" class="muted">
+        <div style="background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:12px">
+          <div style="font-size:13px;color:var(--text);margin-bottom:8px">✂️ 操作</div>
+          <button class="btn" style="width:100%;margin-bottom:6px" onclick="editPlayPause()">▶/⏸ 播放（从头）</button>
+          <button class="btn sm" style="width:100%;margin-bottom:6px" onclick="editCutNow()">✂️ 在播放头处分割</button>
+          <button class="btn sm secondary" style="width:100%;margin-bottom:6px" onclick="editDelSelected()">🗑 删除选中片段</button>
+          <button class="btn sm secondary" style="width:100%;margin-bottom:6px" onclick="editUndoCut()">↩️ 撤销</button>
+          <button class="btn ok" style="width:100%" id="btn-edit-clip" onclick="editClip()" disabled>💾 导出（保留拼接）</button>
+          <div style="margin-top:10px;display:flex;align-items:center;gap:6px">
+            <button class="btn sm secondary" onclick="tlZoom(-1)">−</button>
+            <span style="flex:1;text-align:center;font-size:11px">缩放</span>
+            <button class="btn sm secondary" onclick="tlZoom(1)">＋</button>
+          </div>
+          <div style="margin-top:10px;font-size:12px;color:var(--sub)">
+            <div>当前 <b id="edit-cur" style="color:var(--text)">00:00</b></div>
+            <div>总长 <b id="edit-dur" style="color:var(--text)">00:00</b></div>
+            <div id="edit-count">共 1 段</div>
+            <div id="edit-hint"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="muted" style="margin:8px 0">👇 时间线：播放头拖动定位；点片段选中（黄色框）；「分割」在播放头处切开；点「导出」保留全部片段拼接出片（要删的先点选再删）。</div>
+    <div id="edit-timeline" style="position:relative;background:#0d1524;border:1px solid var(--border);border-radius:10px;padding:10px 8px;overflow-x:auto">
+      <div id="tl-ruler" style="position:relative;height:20px;margin-bottom:4px;font-size:10px;color:var(--sub);white-space:nowrap"></div>
+      <div id="tl-video" style="position:relative;height:88px;background:#111a2e;border-radius:6px;overflow:hidden;white-space:nowrap"></div>
+      <div id="tl-audio" style="position:relative;height:44px;background:#0a1220;border-radius:6px;margin-top:4px;overflow:hidden;white-space:nowrap"></div>
+      <div id="tl-playhead" style="position:absolute;top:0;bottom:0;width:2px;background:#f59e0b;pointer-events:none;display:none"></div>
+    </div>
+    <div id="edit-result" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let folders = [], currentFolder = null, materials = [], selected = new Set();
+
+// ---------- 分析模型按需加载 ----------
+// 启动时模型不加载；点「分析」才加载 qwen2.5vl:3b；其他操作（检索/剧本/批量）自动卸载释放显存。
+let modelTimer = null, modelLoading = false;
+function refreshModelStatus() {
+  fetch("/api/model_status").then(r => r.json()).then(d => {
+    const el = $("model-state");
+    if (!el) return;
+    const loaded = d.loaded || [];
+    const vlmUp = loaded.some(m => String(m).split(":")[0] === "qwen2.5vl" || String(m).startsWith("qwen2.5vl"));
+    if (vlmUp) { el.textContent = "已加载"; el.className = "loaded"; $("model-detail").textContent = "分析模型就绪，正在使用中"; }
+    else if (modelLoading) { el.textContent = "加载中…"; el.className = ""; $("model-detail").textContent = "首次加载分析模型约需 1~2 分钟，请稍候"; }
+    else { el.textContent = "未加载"; el.className = ""; $("model-detail").textContent = "按需加载——点「分析」才启动，其他操作自动释放显存"; }
+  }).catch(() => {});
+}
+function unloadVLM() {
+  if (scanTimer) return;  // 分析进行中不卸载，避免中断 VLM 调用
+  modelLoading = false;
+  fetch("/api/model_unload", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+    .then(r => r.json()).then(() => refreshModelStatus()).catch(() => {});
+}
+function markModelLoading() {
+  modelLoading = true;
+  const el = $("model-state");
+  if (el) { el.textContent = "加载中…"; el.className = ""; $("model-detail").textContent = "首次加载分析模型约需 1~2 分钟，请稍候（本素材分析完会自动释放）"; }
+  if (modelTimer) clearInterval(modelTimer);
+  modelTimer = setInterval(refreshModelStatus, 3000);  // 分析期间每 3 秒看一次模型是否就绪
+}
+function stopModelPoll() { if (modelTimer) { clearInterval(modelTimer); modelTimer = null; } refreshModelStatus(); }
+
+function toast(text, ms = 2500) {
+  const t = $("toast"); t.textContent = text; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), ms);
+}
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function fmtDur(sec) { if (!sec) return "-"; sec = Math.round(sec); return Math.floor(sec/60) + ":" + String(sec%60).padStart(2,"0"); }
+
+// ---------- 免分析批量剪辑（文件夹按时间规则批量切） ----------
+let batchTimer = null;
+function hmsSec(h, m, s) { return (parseInt(h) || 0) * 3600 + (parseInt(m) || 0) * 60 + (parseInt(s) || 0); }
+function startBatch() {
+  unloadVLM();  // 批量剪不需要分析模型，立即释放显存
+  const start = hmsSec($("bh").value, $("bm").value, $("bs").value);
+  const hasEnd = $("eh").value || $("em").value || $("es").value;
+  const end = hasEnd ? hmsSec($("eh").value, $("em").value, $("es").value) : null;
+  if (start === 0 && end == null) { toast("请填开头时间（时/分/秒）"); return; }
+  if (!currentFolder) { toast("先在目录列表选中一个文件夹"); return; }
+  const btn = $("btn-batch"); btn.disabled = true;
+  $("batch-status").textContent = "启动批量剪辑...";
+  const desc = `开头 ${start}s` + (end != null ? ` 到 ${end}s` : " 到结尾");
+  fetch("/api/batch_clip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder: currentFolder, start, end, resolution: $("batch-res").value }) })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { toast(d.error); $("batch-status").textContent = "❌ " + d.error; return; }
+      $("batch-status").textContent = `开始批量剪 ${d.total} 个视频：${desc}`;
+      $("batch-list").innerHTML = "";
+      if (batchTimer) clearInterval(batchTimer);
+      batchTimer = setInterval(() => pollBatch(d.batch_id), 2500);
+    })
+    .catch(e => { toast("启动失败: " + e.message); $("batch-status").textContent = "❌ " + e.message; })
+    .finally(() => btn.disabled = false);
+}
+function pollBatch(id) {
+  fetch("/api/batch_status?batch_id=" + encodeURIComponent(id))
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { $("batch-status").textContent = "❌ " + d.error; if (batchTimer) clearInterval(batchTimer); return; }
+      $("batch-status").textContent = `处理中 ${d.done}/${d.total}（${d.rule}）...`;
+      const box = $("batch-list");
+      box.innerHTML = "";
+      (d.results || []).forEach((item, i) => {
+        const row = document.createElement("div");
+        row.className = "snip";
+        if (item.ok) {
+          const url = "/materials/" + item.output;  // 成片已移到素材/批量/ 子目录
+          row.innerHTML = `<div class="snip-head"><b>${i + 1}</b> <span>${esc(item.file.split("/").pop())}</span> → <span class="muted">批量/</span> <a href="${url}" target="_blank" style="color:#86efac">⬇ 查看成片</a></div>`;
+        } else {
+          row.innerHTML = `<div class="snip-head"><b>${i + 1}</b> <span>${esc(item.file.split("/").pop())}</span> <span class="muted">❌ ${esc(item.error || "失败")}</span></div>`;
+        }
+        box.appendChild(row);
+      });
+      if (d.finished) {
+        if (batchTimer) clearInterval(batchTimer); batchTimer = null;
+        const ok = (d.results || []).filter(x => x.ok).length;
+        $("batch-status").textContent = `✅ 批量完成：${ok}/${d.total} 成功` + (d.error ? `，错误：${d.error}` : "");
+      }
+    })
+    .catch(() => {});
+}
+
+// ---------- 目录 ----------
+async function loadFolders() {
+  $("folder-loading").style.display = "";
+  $("folder-list").innerHTML = "";
+  try {
+    const r = await fetch("/api/folders");
+    const data = await r.json();
+    folders = data.folders || [];
+    const totalMat = folders.reduce((a, f) => a + f.count, 0) + (data.root_files || 0);
+    $("folder-hint").textContent = `共 ${totalMat} 个素材文件`;
+    renderFolders();
+  } catch (e) { toast("加载目录失败: " + e.message); }
+  $("folder-loading").style.display = "none";
+}
+function renderFolders() {
+  const box = $("folder-list"); box.innerHTML = "";
+  // 同步边听边剪的文件夹下拉
+  const fs = $("edit-folder-sel");
+  if (fs) {
+    const cur = fs.value;
+    fs.innerHTML = '<option value="">（选文件夹）</option>' + folders.map(f => `<option value="${esc(f.is_root ? "." : f.name)}">${esc(f.name)}（${f.count}）</option>`).join("");
+    fs.value = (cur && folders.some(f => (f.is_root ? "." : f.name) === cur)) ? cur : "";
+    if (fs.value) loadEditFiles(fs.value);
+  }
+  if (!folders.length) {
+    box.innerHTML = '<div class="muted" style="padding:12px">materials 下还没有子目录。请在项目外的 <b>素材\\</b> 目录（或 <b>ai-video-studio\\materials\\</b>）下创建文件夹并放入视频/图片素材，然后点「🔄 刷新状态」。</div>';
+    return;
+  }
+  folders.forEach(f => {
+    const pct = f.count ? Math.round(f.analyzed / f.count * 100) : 0;
+    const d = document.createElement("div");
+    d.className = "folder";
+    // 点击 = 选中文件夹（高亮），不跳页；分析/批量/下一步都从当前页操作
+    d.onclick = () => {
+      currentFolder = f.is_root ? "." : f.name;
+      document.querySelectorAll(".folder").forEach(x => x.style.borderColor = "");
+      d.style.borderColor = "var(--accent)";
+      $("folder-hint").textContent = "已选中：「" + f.name + "」 可分析 / 批量剪 / 边听边剪 / 下一步选素材";
+      // 联动边听边剪的文件夹下拉
+      if (fs) { fs.value = f.is_root ? "." : f.name; loadEditFiles(fs.value); }
+    };
+    d.innerHTML = `
+      <div class="fname">${f.is_root ? "📁 " : "📂 "}${esc(f.name)}</div>
+      <div class="fmeta">${f.count} 个素材 · 共 ${fmtDur(f.total_duration)} · 已分析 ${f.analyzed}/${f.count}</div>
+      <div class="fbar"><i style="width:${pct}%"></i></div>
+      <div class="fstat ${f.done ? "" : "pending"}">${f.done ? "✅ 已完成" : (f.analyzed ? "分析中…" : "未分析")}</div>`;
+    box.appendChild(d);
+  });
+  $("btn-goto-mats").disabled = !folders.length;
+}
+// 时间线剪辑：加载选中文件夹的素材 → 勾选列表（可多选）
+let editSelFiles = new Set();  // 当前勾选的素材（目录页入口）
+async function loadEditFiles(folder) {
+  const box = $("edit-file-list"), btn = $("btn-open-edit");
+  if (!box) return;
+  editSelFiles.clear();
+  box.innerHTML = '<div class="muted" style="grid-column:1/-1;padding:12px"><span class="loading"></span>加载素材...</div>';
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/materials?folder=" + encodeURIComponent(folder || "."));
+    const data = await r.json();
+    const mats = (data.materials || []).filter(m => /\.(mp4|mov|mkv|avi|m4v|webm|ts)$/i.test(m.file));
+    box.innerHTML = "";
+    if (!mats.length) {
+      box.innerHTML = '<div class="muted" style="grid-column:1/-1;padding:12px">该文件夹没有视频素材</div>';
+      return;
+    }
+    mats.forEach(m => {
+      const d = document.createElement("div");
+      d.className = "mat";
+      d.onclick = () => {
+        if (editSelFiles.has(m.file)) editSelFiles.delete(m.file); else editSelFiles.add(m.file);
+        d.classList.toggle("selected", editSelFiles.has(m.file));
+        updateEditSelCount();
+      };
+      d.innerHTML = `
+        <div class="st ${m.analyzed ? "done" : "pending"}">${m.analyzed ? "已分析" : "未分析"}</div>
+        <div class="name">${esc(m.name)}</div>
+        <div class="meta">${fmtDur(m.duration_sec)}${m.size_mb ? " · " + m.size_mb + " MB" : ""}</div>
+        <div class="ck"></div>`;
+      box.appendChild(d);
+    });
+    updateEditSelCount();
+  } catch (e) {
+    box.innerHTML = '<div class="muted" style="grid-column:1/-1;padding:12px">加载失败: ' + esc(e.message) + '</div>';
+  }
+}
+function updateEditSelCount() {
+  const btn = $("btn-open-edit");
+  $("edit-sel-count").textContent = "已勾选 " + editSelFiles.size + " 个素材";
+  if (btn) btn.disabled = editSelFiles.size < 1;
+}
+function openEditFromSel() {
+  const files = [...editSelFiles];
+  if (!files.length) { toast("请先勾选要剪的素材（可多选）"); return; }
+  const names = files.map(f => f.split("/").pop());
+  openEditFiles(files, names);
+}
+
+// ---------- 分析 ----------
+let scanTimer = null;
+async function scanFolder() {
+  if (!currentFolder) { toast("请先点击选择一个素材目录"); return; }
+  const btn = $("btn-scan"); btn.disabled = true;
+  const prog = $("scan-progress");
+  markModelLoading();
+  prog.innerHTML = `<span class="loading"></span>正在加载分析模型并启动分析 <b>${esc(currentFolder)}</b>（首次加载模型约 1~2 分钟）...`;
+  try {
+    const r = await fetch("/api/scan", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ folder: currentFolder }) });
+    const data = await r.json();
+    if (data.error || !data.scan_id) { prog.innerHTML = "❌ 分析启动失败: " + esc(data.error || "无 scan_id"); stopModelPoll(); btn.disabled = false; return; }
+    const scanId = data.scan_id;
+    scanTimer = setInterval(async () => {
+      try {
+        const sr = await fetch("/api/scan_status?scan_id=" + encodeURIComponent(scanId));
+        const st = await sr.json();
+        const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
+        prog.innerHTML = `<span class="loading"></span>分析进度 <b>${st.done}/${st.total}</b>（${pct}%）· 成功 ${st.ok} · 失败 ${st.failed}`
+          + (st.current ? `<br><span class="muted">当前：${esc(st.current.split("/").pop())}</span>` : "");
+        if (st.finished) {
+          clearInterval(scanTimer); scanTimer = null;
+          stopModelPoll();
+          if (st.error) prog.innerHTML = "❌ 分析出错: " + esc(st.error);
+          else {
+            prog.innerHTML = `✅ 分析完成：${st.total} 个素材，成功 ${st.ok} 个${st.failed ? "，失败 " + st.failed + " 个" : ""}。正在刷新目录状态...`;
+            await loadFolders();
+            toast(st.failed ? `分析完成，${st.failed} 个失败` : "分析完成！", st.failed ? 5000 : 2500);
+          }
+          btn.disabled = false;
+        }
+      } catch (e) { clearInterval(scanTimer); scanTimer = null; prog.innerHTML = "❌ 进度查询出错: " + esc(e.message); btn.disabled = false; }
+    }, 2000);
+  } catch (e) { prog.innerHTML = "❌ 分析启动出错: " + esc(e.message); stopModelPoll(); btn.disabled = false; }
+}
+
+// ---------- 素材 ----------
+async function gotoMaterials() {
+  $("card-folders").classList.add("hidden");
+  $("card-chat").classList.remove("hidden");
+  markStep(4);
+  selected.clear(); materials = [];
+  await refreshMaterials();
+}
+function backToFolders() {
+  $("card-chat").classList.add("hidden");
+  $("card-folders").classList.remove("hidden");
+  markStep(1);
+}
+async function refreshMaterials() {
+  $("mat-loading").classList.remove("hidden");
+  $("mat-list").innerHTML = "";
+  try {
+    const r = await fetch("/api/materials?folder=" + encodeURIComponent(currentFolder || "."));
+    const data = await r.json();
+    materials = data.materials || [];
+    $("mat-hint").textContent = `当前目录：${esc(currentFolder || "根目录")} · ${materials.length} 个素材`;
+    renderMaterials();
+  } catch (e) { toast("加载素材失败: " + e.message); }
+  $("mat-loading").classList.add("hidden");
+}
+function renderMaterials() {
+  const box = $("mat-list"); box.innerHTML = "";
+  if (!materials.length) {
+    box.innerHTML = '<div class="muted" style="padding:12px;grid-column:1/-1">该目录下没有媒体文件，或还没有分析结果。可返回目录重新分析。</div>';
+    return;
+  }
+  materials.forEach(m => {
+    const d = document.createElement("div");
+    d.className = "mat" + (selected.has(m.file) ? " selected" : "");
+    d.onclick = () => {
+      if (!m.analyzed) { toast("该素材还未分析，请先在目录页点击「分析所选目录」"); return; }
+      toggleSelect(m.file, d);
+    };
+    if (!m.analyzed) d.style.opacity = ".45";
+    d.innerHTML = `
+      <div class="st ${m.analyzed ? "done" : "pending"}">${m.analyzed ? "已分析" : "未分析"}</div>
+      <div class="name">${esc(m.name)}</div>
+      <button class="btn sm pv-btn" title="预览素材并手动调整起止时间剪辑" onclick="event.stopPropagation();openPreview(${JSON.stringify(m.file)}, ${JSON.stringify(m.name)})">👁 预览</button>
+      <button class="btn sm pv-btn" title="进入时间线剪辑：勾选多个素材会全部合并进来，可分割/删除/拼接出片" onclick="event.stopPropagation();openEditSmart(${JSON.stringify(m.file)}, ${JSON.stringify(m.name)})">🎬 剪辑</button>
+      <div class="meta">${fmtDur(m.duration_sec)}${m.duration_sec ? " · " : ""}${m.scenes ? m.scenes + " 场景" : ""} · ${m.size_mb} MB</div>
+      ${m.summary ? `<div class="sum">${esc(m.summary)}</div>` : ""}
+      ${m.tags && m.tags.length ? `<div class="tags">${m.tags.slice(0,5).map(t => `<span>${esc(t)}</span>`).join("")}</div>` : ""}
+      <div class="ck"></div>`;
+    box.appendChild(d);
+  });
+  updateSelCount();
+}
+function toggleSelect(file, el) {
+  if (selected.has(file)) selected.delete(file); else selected.add(file);
+  el.classList.toggle("selected", selected.has(file));
+  updateSelCount();
+}
+function toggleSelectAll() {
+  if (selected.size === materials.length) selected.clear();
+  else materials.forEach(m => selected.add(m.file));
+  renderMaterials();
+}
+function selectAnalyzed() {
+  materials.forEach(m => { if (m.analyzed) selected.add(m.file); });
+  renderMaterials();
+}
+function updateSelCount() {
+  $("sel-count").textContent = `已选 ${selected.size} 个素材`;
+  const btn = $("btn-merge-tl");
+  if (btn) btn.disabled = selected.size < 1;
+}
+
+// ---------- 素材预览 + 手动时间剪辑 ----------
+let pvCurrentFile = null, pvPlayingRange = false, pvRangeEnd = 0;
+function fmtSec(sec) {
+  if (!isFinite(sec) || sec < 0) return "00:00";
+  sec = Math.round(sec);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : String(m).padStart(2, "0")) + ":" + String(s).padStart(2, "0");
+}
+function parseTime(str, fallback) {
+  str = String(str || "").trim();
+  if (!str) return fallback;
+  if (/^\d+(\.\d+)?$/.test(str)) return parseFloat(str);           // 纯秒：12 / 12.5
+  const parts = str.split(":").map(x => parseFloat(x));            // 分:秒 或 时:分:秒
+  if (parts.some(x => isNaN(x))) return fallback;
+  let sec = 0;
+  for (const p of parts) sec = sec * 60 + p;
+  return sec;
+}
+function openPreview(file, name) {
+  pvCurrentFile = file;
+  const isImg = /\.(jpe?g|png|bmp|webp|gif)$/i.test(file);
+  $("pv-name").textContent = name;
+  $("pv-type").textContent = isImg ? "图片（不支持时间剪辑）" : "视频";
+  $("pv-result").innerHTML = "";
+  const v = $("pv-video"), img = $("pv-img");
+  v.pause(); v.removeAttribute("src");
+  img.removeAttribute("src");
+  if (isImg) {
+    v.classList.add("hidden");
+    img.classList.remove("hidden");
+    img.src = "/materials/" + encodeURI(file);
+    $("pv-times").style.display = "none";
+    $("pv-bar").style.display = "none";
+    $("pv-clipbar").style.display = "none";
+  } else {
+    img.classList.add("hidden");
+    v.classList.remove("hidden");
+    $("pv-times").style.display = "";
+    $("pv-bar").style.display = "";
+    $("pv-clipbar").style.display = "";
+    $("pv-start").value = "0";
+    $("pv-end").value = "";
+    $("pv-cur").textContent = "00:00";
+    $("pv-dur").textContent = "00:00";
+    v.src = "/materials/" + encodeURI(file);
+  }
+  $("pv-modal").classList.add("show");
+}
+function closePreview() {
+  const v = $("pv-video");
+  v.pause(); v.removeAttribute("src"); pvPlayingRange = false;
+  $("pv-modal").classList.remove("show");
+}
+function pvSetStart() { $("pv-start").value = fmtSec($("pv-video").currentTime); }
+function pvSetEnd() { $("pv-end").value = fmtSec($("pv-video").currentTime); }
+function pvPlayRange() {
+  const v = $("pv-video");
+  const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+  const start = parseTime($("pv-start").value, 0);
+  let end = parseTime($("pv-end").value, dur || 0);
+  if (dur && end > dur) end = dur;
+  if (!(end > start)) { toast("结束时间必须大于开始时间"); return; }
+  pvRangeEnd = end; pvPlayingRange = true;
+  v.currentTime = start;
+  v.play().catch(() => {});
+}
+async function pvClip() {
+  if (!pvCurrentFile) return;
+  const v = $("pv-video");
+  const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+  const start = parseTime($("pv-start").value, 0);
+  let end = parseTime($("pv-end").value, dur || 0);
+  if (dur && end > dur) end = dur;
+  if (!(end > start)) { toast("结束时间必须大于开始时间"); return; }
+  const btn = $("btn-pvclip"); btn.disabled = true;
+  const box = $("pv-result");
+  box.innerHTML = `<div class="msg tool"><span class="loading"></span>正在剪辑 ${fmtSec(start)} - ${fmtSec(end)}（ffmpeg 出片中，请稍候）...</div>`;
+  try {
+    const r = await fetch("/api/clip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file: pvCurrentFile, start, end, resolution: $("pv-res").value }) });
+    const data = await r.json();
+    if (data.error) { box.innerHTML = '<div class="msg err">❌ 剪辑失败：' + esc(data.error) + '</div>'; return; }
+    if (data.output) {
+      const url = "/output/" + data.output.split("/").slice(-2).join("/");
+      const nm = data.output.split("/").pop();
+      box.innerHTML = `<div class="msg ok">✅ 出片成功：<b>${esc(nm)}</b>（${data.steps_ok} 步完成）<a href="${url}" download style="color:#86efac;margin-left:8px">⬇ 下载</a></div>`;
+      const vid = document.createElement("video");
+      vid.src = url; vid.controls = true;
+      vid.style.cssText = "width:100%;border-radius:8px;margin-top:8px;background:#000";
+      box.appendChild(vid);
+      box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } else {
+      box.innerHTML = '<div class="msg err">❌ 执行失败：' + esc(data.detail || JSON.stringify(data)) + '</div>';
+    }
+  } catch (e) { box.innerHTML = '<div class="msg err">❌ 出错：' + esc(e.message) + '</div>'; }
+  btn.disabled = false;
+}
+
+// ---------- 时间线剪辑（剪映式）：多素材合并 → 预览 + 时间线 + 播放头 + 分割/删除/撤销/导出 ----------
+let editFile = null, editDur = 0;
+let tlSegs = [];      // [{id,file,start,end,img,dur,wave}] 时间线上的片段（按顺序，file 为各自源素材）
+let tlSel = null;     // 选中的片段 id
+let tlUndo = [];      // 撤销栈
+let tlPPS = 12;       // 每秒像素（时间线缩放）
+let tlT = 0;          // 播放头位置（秒）
+let tlPlayId = 0;     // 播放动画 id
+let tlSeq = 0;        // 片段 id 计数器（保证唯一）
+
+// 单素材：直接打开（素材卡片入口）
+function openEdit(file, name) {
+  openEditFiles([file], [name || file]);
+}
+// 剪辑入口：有勾选素材 → 全部合并进时间线；否则编辑当前单个素材
+function openEditSmart(file, name) {
+  const files = [...selected];
+  if (files.length) {
+    const names = files.map(f => { const m = materials.find(x => x.file === f); return m ? m.name : f; });
+    openEditFiles(files, names);
+  } else {
+    openEditFiles([file], [name || file]);
+  }
+}
+// 工具栏入口：勾选的素材合并到时间线
+function openEditSelected() {
+  const files = [...selected];
+  if (!files.length) { toast("请先勾选素材"); return; }
+  const names = files.map(f => { const m = materials.find(x => x.file === f); return m ? m.name : f; });
+  openEditFiles(files, names);
+}
+async function openEditFiles(files, names) {
+  editFile = files[0] || null; editDur = 0; tlSegs = []; tlSel = null; tlUndo = []; tlT = 0; tlPlayId = 0; tlSeq = 0;
+  $("edit-name").textContent = (names.length > 1 ? names.length + " 个素材合并 · " : "") + (names[0] || "");
+  $("edit-result").innerHTML = "";
+  $("edit-cur").textContent = "00:00";
+  $("edit-dur").textContent = "00:00";
+  const v = $("edit-video");
+  v.pause(); v.removeAttribute("src");
+  v.dataset.file = "";
+  $("edit-modal").classList.add("show");
+  // 逐个素材加载分段 + 波形 + 胶片条
+  const all = [];
+  for (const f of files) {
+    try {
+      const r = await fetch("/api/segments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file: f, cuts: [] }) });
+      const d = await r.json();
+      if (d.error) { toast(f + ": " + d.error); continue; }
+      const segs = (d.segments || []).map(s => ({ id: "s" + (tlSeq++), file: f, start: s.start, end: s.end, dur: s.end - s.start, img: s.thumb || "", wave: null }));
+      all.push(...segs);
+      editDur += d.duration_sec || 0;
+      // 波形
+      fetch("/api/waveform", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file: f, points: 2000 }) })
+        .then(r => r.json()).then(dd => { if (!dd.error && dd.peaks) { segs.forEach(s => { s.wave = dd.peaks; }); renderTimeline(); } }).catch(() => {});
+      // 胶片条
+      fetch("/api/filmstrip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file: f, cuts: [], frames_per_seg: 6 }) })
+        .then(r => r.json()).then(fd => { if (!fd.error && fd.strips) { fd.strips.forEach(st => { const seg = segs.find(s => Math.abs(s.start - st.start) < 0.05); if (seg) seg.img = st.img; }); renderTimeline(); } }).catch(() => {});
+    } catch (e) { toast(f + ": 加载失败 " + e.message); }
+  }
+  tlSegs = all;
+  tlSel = null; tlUndo = [];
+  $("edit-dur").textContent = fmtSec(tlTotal());
+  renderTimeline();
+}
+function closeEdit() {
+  cancelAnimationFrame(tlPlayId); tlPlayId = 0;
+  const v = $("edit-video"); v.pause(); v.removeAttribute("src");
+  v.dataset.file = "";
+  $("edit-modal").classList.remove("show");
+}
+function tlTotal() { return tlSegs.reduce((a, s) => a + s.dur, 0); }
+function renderTimeline() {
+  const total = tlTotal() || editDur || 1;
+  const W = Math.max(400, total * tlPPS);
+  const box = $("edit-timeline");
+  // 刻度尺
+  const ruler = $("tl-ruler");
+  ruler.innerHTML = "";
+  ruler.style.width = W + "px";
+  const step = tlPPS >= 30 ? 1 : (tlPPS >= 15 ? 2 : (tlPPS >= 6 ? 5 : 10));
+  for (let t = 0; t <= total + step; t += step) {
+    const d = document.createElement("span");
+    d.style.cssText = `position:absolute;left:${t * tlPPS}px;top:0;font-size:9px`;
+    d.textContent = fmtSec(t);
+    ruler.appendChild(d);
+  }
+  // 视频轨道
+  const vtr = $("tl-video");
+  vtr.style.width = W + "px";
+  vtr.innerHTML = "";
+  let acc = 0;
+  tlSegs.forEach(s => {
+    const b = document.createElement("div");
+    b.className = "tl-clip" + (tlSel === s.id ? " sel" : "");
+    b.style.cssText = `position:absolute;left:${acc * tlPPS}px;top:4px;width:${Math.max(12, s.dur * tlPPS - 2)}px;height:80px;border-radius:5px;overflow:hidden;background:#1a2a4a;cursor:pointer;border:2px solid transparent`;
+    if (s.img) b.style.backgroundImage = `url('${s.img}')`;
+    b.style.backgroundSize = "100% 100%";   // 胶片条横向铺满整个片段块
+    b.style.backgroundRepeat = "no-repeat";
+    const label = document.createElement("div");
+    label.style.cssText = "position:absolute;left:3px;top:3px;background:rgba(0,0,0,.65);color:#fff;font-size:10px;padding:1px 5px;border-radius:3px";
+    label.textContent = fmtSec(acc) + " (" + s.dur.toFixed(1) + "s)";
+    b.appendChild(label);
+    b.onclick = e => { e.stopPropagation(); tlSel = s.id; renderTimeline(); editSeekT(acc + 0.1); };
+    vtr.appendChild(b);
+    acc += s.dur;
+  });
+  // 音频轨道（波形）：每段用自己的素材波形（各自文件）
+  const atr = $("tl-audio");
+  atr.style.width = W + "px";
+  atr.innerHTML = "";
+  const cvs = document.createElement("canvas");
+  cvs.width = Math.max(2, W); cvs.height = 44;
+  const ctx = cvs.getContext("2d");
+  atr.appendChild(cvs);
+  ctx.fillStyle = "#3b82f6";
+  const mid = 22;
+  acc = 0;
+  let hasWave = false;
+  tlSegs.forEach(s => {
+    const x1 = acc * tlPPS, x2 = (acc + s.dur) * tlPPS;
+    const wav = s.wave;
+    if (wav && wav.length) {
+      hasWave = true;
+      const srcDur = s.end - s.start || 1;      // 该片段在源素材中的时长
+      const n = wav.length;
+      for (let x = Math.floor(x1); x < x2 && x < W; x++) {
+        const frac = (x - x1) / Math.max(1, x2 - x1);
+        const idx = Math.min(n - 1, Math.floor(frac * n));
+        const h = Math.max(2, wav[idx] * 40);
+        ctx.fillRect(x, mid - h / 2, 1, h);
+      }
+    }
+    acc += s.dur;
+  });
+  if (!hasWave) {
+    ctx.fillStyle = "#2c3a55";
+    ctx.fillRect(0, 21, W, 2);
+  }
+  // 状态
+  $("edit-count").textContent = "共 " + tlSegs.length + " 段 · 总长 " + fmtSec(total);
+  $("btn-edit-clip").disabled = tlSegs.length < 1;
+  $("edit-hint").textContent = tlSel ? "选中片段可删除" : "点时间线片段选中";
+  updatePlayhead();
+}
+function tlClipPos(id) { let acc = 0; for (const s of tlSegs) { if (s.id === id) return acc; acc += s.dur; } return 0; }
+function segAt(t) {
+  let acc = 0;
+  for (const s of tlSegs) { if (t >= acc - 0.01 && t < acc + s.dur) return { seg: s, offset: t - acc }; acc += s.dur; }
+  if (tlSegs.length) { const last = tlSegs[tlSegs.length - 1]; return { seg: last, offset: last.dur }; }
+  return null;
+}
+function updatePlayhead() {
+  const box = $("edit-timeline");
+  const ph = $("tl-playhead");
+  ph.style.display = tlT >= 0 ? "block" : "none";
+  ph.style.left = (tlT * tlPPS) + "px";
+  ph.style.height = "100%";
+}
+function editSeekT(t) {
+  tlT = Math.max(0, Math.min(tlTotal(), t));
+  updatePlayhead();
+  const hit = segAt(tlT);
+  if (hit) tlSeekVideo(hit.seg, hit.offset, false);
+  $("edit-cur").textContent = fmtSec(tlT);
+}
+function editCutNow() {
+  const v = $("edit-video");
+  const t = isFinite(v.currentTime) ? v.currentTime : tlT;
+  if (!tlSegs.length) return;
+  const hit = segAt(t);
+  if (!hit) return;
+  const { seg, offset } = hit;
+  if (offset < 0.15 || offset > seg.dur - 0.15) { toast("播放头在片段边缘，先移动再分割"); return; }
+  tlUndo.push(JSON.stringify(tlSegs));
+  const i = tlSegs.indexOf(seg);
+  const a = { id: "s" + (tlSeq++), file: seg.file, start: seg.start, end: seg.start + offset, dur: offset, img: seg.img, wave: seg.wave };
+  const b = { id: "s" + (tlSeq++), file: seg.file, start: seg.start + offset, end: seg.end, dur: seg.dur - offset, img: seg.img, wave: seg.wave };
+  tlSegs.splice(i, 1, a, b);
+  tlSel = b.id;
+  renderTimeline();
+  toast("已分割：[" + fmtSec(a.start) + "-" + fmtSec(a.end) + "] + [" + fmtSec(b.start) + "-" + fmtSec(b.end) + "]");
+}
+function editDelSelected() {
+  if (!tlSel) { toast("先点选要删除的片段"); return; }
+  tlUndo.push(JSON.stringify(tlSegs));
+  const i = tlSegs.findIndex(s => s.id === tlSel);
+  if (i < 0) return;
+  const removed = tlSegs[i];
+  tlSegs.splice(i, 1);
+  tlSel = null;
+  renderTimeline();
+  toast("已删除片段 [" + fmtSec(removed.start) + "-" + fmtSec(removed.end) + "]");
+}
+function editUndoCut() {
+  if (!tlUndo.length) { toast("没有可撤销的操作"); return; }
+  tlSegs = JSON.parse(tlUndo.pop());
+  tlSel = null;
+  renderTimeline();
+  toast("已撤销");
+}
+function tlZoom(dir) {
+  tlPPS = Math.max(4, Math.min(60, tlPPS * (dir > 0 ? 1.5 : 1 / 1.5)));
+  renderTimeline();
+}
+// 定位 video 到某个片段（若源文件不同则切换 src），并可选播放
+function tlSeekVideo(seg, offset, autoplay) {
+  const v = $("edit-video");
+  const target = "/materials/" + encodeURI(seg.file);
+  const switchSrc = v.dataset.file !== seg.file;
+  if (switchSrc) {
+    v.dataset.file = seg.file;
+    v.src = target;
+    // 等元数据加载后 seek 到片段起点再播放
+    const onMeta = () => {
+      v.removeEventListener("loadedmetadata", onMeta);
+      if (isFinite(v.duration) && v.duration > 0) {
+        v.currentTime = Math.min(seg.start + offset, seg.end - 0.05);
+        if (autoplay) v.play().catch(() => {});
+      }
+    };
+    v.addEventListener("loadedmetadata", onMeta);
+    v.load();
+  } else {
+    v.currentTime = Math.min(seg.start + offset, seg.end - 0.05);
+    if (autoplay) v.play().catch(() => {});
+  }
+}
+function editPlayPause() {
+  const v = $("edit-video");
+  if (v.paused) {
+    const hit = segAt(tlT);
+    if (hit) tlSeekVideo(hit.seg, hit.offset, true);
+    else v.play().catch(() => {});
+  } else v.pause();
+}
+async function editClip() {
+  if (!tlSegs.length) { toast("没有片段"); return; }
+  const btn = $("btn-edit-clip"); btn.disabled = true;
+  const box = $("edit-result");
+  box.innerHTML = '<div class="msg tool"><span class="loading"></span>无损剪辑中（trim+concat，秒级）...</div>';
+  try {
+    const r = await fetch("/api/clip_selected", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ selections: tlSegs.map(x => ({ file: x.file, start: x.start, end: x.end })) }) });
+    const data = await r.json();
+    if (data.error) { box.innerHTML = '<div class="msg err">❌ ' + esc(data.error) + '</div>'; return; }
+    if (data.output) {
+      const url = "/output/" + data.output.split("/").slice(-2).join("/");
+      const nm = data.output.split("/").pop();
+      box.innerHTML = `<div class="msg ok">✅ 出片成功：<b>${esc(nm)}</b>（${tlSegs.length} 段拼接）<a href="${url}" download style="color:#86efac;margin-left:8px">⬇ 下载</a></div>`;
+      const vid = document.createElement("video");
+      vid.src = url; vid.controls = true;
+      vid.style.cssText = "width:100%;border-radius:8px;margin-top:8px;background:#000";
+      box.appendChild(vid);
+    } else {
+      box.innerHTML = '<div class="msg err">❌ ' + esc(data.detail || JSON.stringify(data)) + '</div>';
+    }
+  } catch (e) { box.innerHTML = '<div class="msg err">❌ ' + esc(e.message) + '</div>'; }
+  btn.disabled = false;
+}
+
+// ---------- 剧本序列：边搜边攒，允许重复，按序列出片 ----------
+let scriptSeq = [];  // [{file, start, end}]
+function addToSeq(file, start, end) {
+  scriptSeq.push({ file, start: parseFloat(start), end: parseFloat(end) });
+  renderSeq();
+  toast("已加入剧本序列（第 " + scriptSeq.length + " 条）");
+}
+function renderSeq() {
+  const box = $("script-seq");
+  box.innerHTML = "";
+  if (!scriptSeq.length) { box.innerHTML = '<div class="muted" style="padding:8px">序列为空——去上面搜场记，点「➕ 入剧本」攒镜头</div>'; }
+  scriptSeq.forEach((s, i) => {
+    const d = document.createElement("div");
+    d.className = "snip";
+    d.innerHTML = `
+      <div class="snip-head">
+        <b>${i + 1}</b>
+        <span>${s.start}-${s.end}s</span>
+        <span class="muted">${esc(s.file.split("/").pop())}</span>
+        <button class="btn sm" onclick="moveSeq(${i},-1)">↑</button>
+        <button class="btn sm" onclick="moveSeq(${i},1)">↓</button>
+        <button class="btn sm" onclick="delSeq(${i})">✕</button>
+      </div>`;
+    box.appendChild(d);
+  });
+  $("seq-count").textContent = scriptSeq.length + " 条";
+  $("btn-seq-clip").disabled = scriptSeq.length < 1;
+}
+function moveSeq(i, d) {
+  const j = i + d;
+  if (j < 0 || j >= scriptSeq.length) return;
+  const t = scriptSeq[i]; scriptSeq[i] = scriptSeq[j]; scriptSeq[j] = t;
+  renderSeq();
+}
+function delSeq(i) { scriptSeq.splice(i, 1); renderSeq(); }
+async function clipSeq() {
+  if (!scriptSeq.length) { toast("先攒几条场记"); return; }
+  unloadVLM();  // 按序列出片只需 ffmpeg，释放分析模型
+  const btn = $("btn-seq-clip"); btn.disabled = true;
+  const box = $("ledger-result");
+  box.innerHTML = '<div class="msg tool"><span class="loading"></span>按剧本序列出片（' + scriptSeq.length + ' 段，ffmpeg）...</div>';
+  try {
+    const r = await fetch("/api/clip_selected", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ selections: scriptSeq }) });
+    const data = await r.json();
+    if (data.error) { box.innerHTML = '<div class="msg err">❌ ' + esc(data.error) + '</div>'; return; }
+    if (data.output) {
+      const url = "/output/" + data.output.split("/").slice(-2).join("/");
+      box.innerHTML = `<div class="msg ok">✅ 剧本成片完成（${data.steps_ok} 步）<a href="${url}" download style="color:#86efac;margin-left:8px">⬇ 下载</a></div>`;
+      const vid = document.createElement("video");
+      vid.src = url; vid.controls = true;
+      vid.style.cssText = "width:100%;border-radius:8px;margin-top:8px;background:#000";
+      box.appendChild(vid);
+    } else {
+      box.innerHTML = '<div class="msg err">❌ ' + esc(data.detail || JSON.stringify(data)) + '</div>';
+    }
+  } catch (e) { box.innerHTML = '<div class="msg err">❌ ' + esc(e.message) + '</div>'; }
+  btn.disabled = false;
+}
+
+// ---------- 场记单：搜索/浏览 → 勾选 → 剪勾选的（时间戳来自文档） ----------
+const ledgerSel = new Map();
+function ledgerRow(sc, file, score) {
+  const d = document.createElement("div");
+  d.className = "ledger";
+  const key = file + "|" + sc.start + "|" + sc.end;
+  const checked = ledgerSel.has(key);
+  const speech = (sc.speech || []).slice(0, 3).map(s => "「" + s.text + "」").join(" ");
+  const thumb = sc.keyframes && sc.keyframes[0] ? sc.keyframes[0].replace(/^\/materials\//, "") : "";
+  const ch = (sc.score_text != null && sc.score_clip != null) ? ` <span class="muted">画面${Math.round(sc.score_clip * 100)}%/文字${Math.round(sc.score_text * 100)}%</span>` : "";
+  d.innerHTML = `
+    <input type="checkbox" ${checked ? "checked" : ""} onchange="toggleLedger('${key.replace(/'/g, "\\'")}', this.checked)">
+    <div class="info">
+      <div><b>${sc.start}-${sc.end}s</b> ${score != null ? `<span class="score">相似度 ${Math.round(score * 100)}%</span>` : ""}${ch} <span class="muted">${esc(file.split("/").pop())}</span>
+        <button class="btn sm" style="float:right" onclick="addToSeq('${file.replace(/'/g, "\\'")}', ${sc.start}, ${sc.end})">➕ 入剧本</button></div>
+      <div class="muted">${esc(sc.content || "")}${sc.subjects && sc.subjects.length ? " · 人物:" + esc(sc.subjects.join("/")) : ""}</div>
+      ${speech ? `<div class="muted" style="color:#93c5fd">${esc(speech)}</div>` : ""}
+    </div>
+    ${thumb ? `<img class="thumb" src="/materials/${thumb}" onclick="window.open('/materials/${thumb}','_blank')" title="点开看大图" alt="">` : ""}`;
+  return d;
+}
+function toggleLedger(key, on) {
+  const parts = key.split("|");
+  if (on) ledgerSel.set(key, { file: parts[0], start: parseFloat(parts[1]), end: parseFloat(parts[2]) });
+  else ledgerSel.delete(key);
+  updateLedgerCount();
+}
+function updateLedgerCount() {
+  $("ledger-count").textContent = "已勾选 " + ledgerSel.size + " 段";
+  $("btn-clip-ledger").disabled = ledgerSel.size < 1;
+}
+function ledgerAll() {
+  if (!selected.size) { toast("请先勾选素材"); return; }
+  unloadVLM();  // 检索用 bge-m3，分析模型 3B 不再需要，立即释放
+  const box = $("ledger-list");
+  box.innerHTML = '<div class="muted"><span class="loading"></span>加载场记单...</div>';
+  $("ledger-hint").textContent = "";
+  Promise.all([...selected].map(f => fetch("/api/ledger?file=" + encodeURIComponent(f)).then(r => r.json())))
+    .then(list => {
+      box.innerHTML = "";
+      let n = 0;
+      list.forEach(d => {
+        if (d.error) { box.innerHTML += `<div class="muted">${esc(d.error)}</div>`; return; }
+        (d.scenes || []).forEach(sc => { box.appendChild(ledgerRow(sc, d.file, null)); n++; });
+      });
+      $("ledger-hint").textContent = `共 ${n} 段场景（时间戳来自文档，勾选后点「剪勾选的」）`;
+      updateLedgerCount();
+    })
+    .catch(e => box.innerHTML = '<div class="muted">加载失败: ' + esc(e.message) + '</div>');
+}
+let ledgerDebounceTimer = null;
+function ledgerDebounced() {
+  clearTimeout(ledgerDebounceTimer);
+  ledgerDebounceTimer = setTimeout(() => {
+    const q = $("ledger-query").value.trim();
+    if (q) ledgerSearch();
+  }, 400);  // 输入停顿 400ms 自动搜索（不用点按钮）
+}
+function ledgerSearch() {
+  const q = $("ledger-query").value.trim();
+  if (!q) { toast("输入搜索词"); return; }
+  if (!selected.size) { toast("请先勾选素材"); return; }
+  unloadVLM();  // 向量检索只用到 bge-m3，释放 3B
+  const box = $("ledger-list");
+  box.innerHTML = '<div class="muted"><span class="loading"></span>向量检索中（bge-m3）...</div>';
+  $("ledger-hint").textContent = "";
+  fetch("/api/ledger_search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: q, files: [...selected] }) })
+    .then(r => r.json())
+    .then(d => {
+      box.innerHTML = "";
+      if (d.error) { box.innerHTML = `<div class="muted">${esc(d.error)}</div>`; return; }
+      if (!d.results.length) { box.innerHTML = '<div class="muted">没有匹配的场景</div>'; return; }
+      d.results.forEach(sc => box.appendChild(ledgerRow(sc, sc.file, sc.score)));
+      $("ledger-hint").textContent = `搜「${d.query}」共 ${d.total} 段，按相似度排序（越靠前越相关）`;
+      updateLedgerCount();
+    })
+    .catch(e => box.innerHTML = '<div class="muted">检索失败: ' + esc(e.message) + '</div>');
+}
+async function clipSelected() {
+  if (!ledgerSel.size) { toast("先勾选要剪的场景"); return; }
+  unloadVLM();  // 剪辑只需 ffmpeg，释放分析模型
+  const btn = $("btn-clip-ledger"); btn.disabled = true;
+  const box = $("ledger-result");
+  box.innerHTML = '<div class="msg tool"><span class="loading"></span>正在按勾选场景出片（ffmpeg）...</div>';
+  try {
+    const r = await fetch("/api/clip_selected", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ selections: [...ledgerSel.values()] }) });
+    const data = await r.json();
+    if (data.error) { box.innerHTML = '<div class="msg err">❌ ' + esc(data.error) + '</div>'; return; }
+    if (data.output) {
+      const url = "/output/" + data.output.split("/").slice(-2).join("/");
+      box.innerHTML = `<div class="msg ok">✅ 出片成功（${data.steps_ok} 步）<a href="${url}" download style="color:#86efac;margin-left:8px">⬇ 下载</a></div>`;
+      const vid = document.createElement("video");
+      vid.src = url; vid.controls = true;
+      vid.style.cssText = "width:100%;border-radius:8px;margin-top:8px;background:#000";
+      box.appendChild(vid);
+    } else {
+      box.innerHTML = '<div class="msg err">❌ ' + esc(data.detail || JSON.stringify(data)) + '</div>';
+    }
+  } catch (e) { box.innerHTML = '<div class="msg err">❌ ' + esc(e.message) + '</div>'; }
+  btn.disabled = false;
+}
+
+// ---------- 剧本批量剪辑 ----------
+async function scriptTextClip() {
+  const text = $("script-text").value.trim();
+  if (!text) { toast("先写剧本文字"); return; }
+  if (!selected.size) { toast("请先勾选素材"); return; }
+  unloadVLM();  // 剧本剪辑用 DeepSeek/bge-m3，不需要分析 3B
+  const box = $("script-text-result");
+  box.innerHTML = '<div class="msg tool"><span class="loading"></span>拆镜头 → 向量匹配场记 → 出片中...</div>';
+  $("script-text-status").textContent = "";
+  try {
+    const r = await fetch("/api/script_text_clip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, files: [...selected] }) });
+    const data = await r.json();
+    if (data.error && !data.shots) { box.innerHTML = '<div class="msg err">❌ ' + esc(data.error) + '</div>'; return; }
+    let html = "";
+    (data.shots || []).forEach((sh, i) => {
+      if (sh.matched) html += `<div class="msg tool" style="font-size:12px">镜头${i + 1}「${esc(sh.text)}」→ 🎯 [${sh.start}-${sh.end}s] 相似度${sh.score} ${esc(sh.content || "")}</div>`;
+      else html += `<div class="msg err" style="font-size:12px">镜头${i + 1}「${esc(sh.text)}」→ ❌ 无匹配（相似度 ${sh.score}）</div>`;
+    });
+    box.innerHTML = html;
+    if (data.output) {
+      const url = "/output/" + data.output.split("/").slice(-2).join("/");
+      box.innerHTML += `<div class="msg ok">✅ 剧本成片完成（${data.matched_count}/${data.shots.length} 镜头匹配）<a href="${url}" download style="color:#86efac;margin-left:8px">⬇ 下载</a></div>`;
+      const vid = document.createElement("video");
+      vid.src = url; vid.controls = true;
+      vid.style.cssText = "width:100%;border-radius:8px;margin-top:8px;background:#000";
+      box.appendChild(vid);
+    } else if (data.error) {
+      box.innerHTML += '<div class="msg err">❌ ' + esc(data.error) + '</div>';
+    }
+  } catch (e) { box.innerHTML = '<div class="msg err">❌ ' + esc(e.message) + '</div>'; }
+}
+async function genScript() {
+  if (!selected.size) { toast("请先勾选素材"); return; }
+  unloadVLM();  // 剧本生成走 DeepSeek（或本地 7B），释放分析 3B
+  const btn = event.target; btn.disabled = true;
+  $("script-status").textContent = "生成中（线上模型，可能需要 1~2 分钟）...";
+  try {
+    const r = await fetch("/api/generate_script", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instruction: "根据这些素材的文档内容，魔改一版分镜剧本（镜头内容必须基于素材，可重复用素材片段）", files: [...selected] }) });
+    const data = await r.json();
+    if (data.error) { toast(data.error); $("script-status").textContent = ""; return; }
+    $("script-input").value = JSON.stringify(data.script, null, 2);
+    $("script-status").textContent = `✅ 剧本已生成（${data.script.shots.length} 个镜头，${data.model || ""}），并已自动向量匹配场记：`;
+    // 直接把"镜头 → 匹配到的场景"渲染到场记单，勾选后点「剪勾选的」出片（剧本一段 ↔ 场景一段）
+    renderScriptMatches(data.matches || []);
+  } catch (e) { toast("生成失败: " + e.message); $("script-status").textContent = ""; }
+  btn.disabled = false;
+}
+function renderScriptMatches(matches) {
+  const box = $("ledger-list");
+  box.innerHTML = "";
+  if (!matches || !matches.length) { box.innerHTML = '<div class="muted">没有匹配结果</div>'; return; }
+  matches.forEach(sh => {
+    const head = document.createElement("div");
+    head.className = "muted";
+    head.style.cssText = "margin:10px 0 4px;font-weight:bold;color:#93c5fd";
+    head.textContent = `📜 镜头${sh.id}：${sh.prompt}` + (sh.dialogue ? `（对白：${sh.dialogue}）` : "") + (sh.duration ? `（${sh.duration}s）` : "");
+    box.appendChild(head);
+    (sh.candidates || []).forEach((sc, idx) => {
+      const row = ledgerRow(sc, sc.file, sc.score);
+      row.querySelector(".info").insertAdjacentHTML("afterbegin", `<span class="muted">候选${idx + 1} </span>`);
+      box.appendChild(row);
+    });
+  });
+  $("ledger-hint").textContent = "✅ 剧本已自动匹配场记：每个镜头下面是相似度最高的场景，勾选后点「剪勾选的」按顺序出片";
+  updateLedgerCount();
+}
+function scriptMatch() {
+  const raw = $("script-input").value.trim();
+  if (!raw) { toast("请先粘贴剧本或点「生成剧本」"); return; }
+  if (!selected.size) { toast("请先勾选素材"); return; }
+  unloadVLM();  // 剧本匹配用 bge-m3，释放 3B
+  let script;
+  try { script = JSON.parse(raw); } catch (e) { toast("剧本不是合法 JSON: " + e.message); return; }
+  if (!script.shots || !script.shots.length) { toast("剧本没有 shots 数组"); return; }
+  const box = $("ledger-list");
+  box.innerHTML = '<div class="muted"><span class="loading"></span>按剧本逐镜头检索全库场记（bge-m3）...</div>';
+  $("ledger-hint").textContent = "";
+  fetch("/api/script_match", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ script, files: [...selected] }) })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { box.innerHTML = `<div class="muted">${esc(d.error)}</div>`; return; }
+      renderScriptMatches(d.shots);
+    })
+    .catch(e => box.innerHTML = '<div class="muted">匹配失败: ' + esc(e.message) + '</div>');
+}
+
+function markStep(n) {
+  for (let i = 1; i <= 4; i++) {
+    const el = $("st" + i);
+    el.classList.toggle("active", i === n);
+    el.classList.toggle("done", i < n);
+  }
+}
+
+// init
+loadFolders();
+refreshModelStatus();
+setInterval(refreshModelStatus, 5000);  // 页面常驻轮询：KEEP_ALIVE 2 分钟到期自动卸载后状态也能及时更新
+(() => {
+  $("edit-folder-sel").addEventListener("change", e => {
+    const f = e.target.value;
+    if (f) loadEditFiles(f); else { $("edit-file-list").innerHTML = ""; $("edit-sel-count").textContent = "已勾选 0 个素材"; $("btn-open-edit").disabled = true; }
+  });
+  const v = $("pv-video");
+  v.addEventListener("loadedmetadata", () => {
+    if (isFinite(v.duration) && v.duration > 0) {
+      $("pv-dur").textContent = fmtSec(v.duration);
+      if (!$("pv-end").value) $("pv-end").value = fmtSec(v.duration);
+    }
+  });
+  v.addEventListener("timeupdate", () => {
+    $("pv-cur").textContent = fmtSec(v.currentTime);
+    if (pvPlayingRange && isFinite(v.duration) && v.currentTime >= pvRangeEnd - 0.15) {
+      v.pause(); pvPlayingRange = false;
+    }
+  });
+  const ev = $("edit-video");
+  ev.addEventListener("timeupdate", () => {
+    // 根据 video 当前播放的源（dataset.file）+ 当前时间，反推时间线位置
+    const curFile = ev.dataset.file;
+    if (curFile && tlSegs.length) {
+      const seg = tlSegs.find(s => s.file === curFile && ev.currentTime >= s.start - 0.05 && ev.currentTime <= s.end + 0.05);
+      if (seg) {
+        tlT = tlClipPos(seg.id) + (ev.currentTime - seg.start);
+        updatePlayhead();
+        $("edit-cur").textContent = fmtSec(tlT);
+      }
+    }
+    // 播放到当前片段结尾 → 自动跳下一段（实现"按时间线连续播放"，跨素材自动切源）
+    if (!ev.paused && tlSegs.length) {
+      const hit = segAt(tlT);
+      if (hit && ev.dataset.file === hit.seg.file && ev.currentTime >= hit.seg.start + hit.seg.dur - 0.12) {
+        const i = tlSegs.indexOf(hit.seg);
+        if (i < tlSegs.length - 1) {
+          const next = tlSegs[i + 1];
+          tlT = tlClipPos(next.id);
+          updatePlayhead();
+          tlSeekVideo(next, 0, true);
+        } else {
+          ev.pause();
+        }
+      }
+    }
+  });
+  ev.addEventListener("loadedmetadata", () => {
+    if (isFinite(ev.duration) && ev.duration > 0) {
+      $("edit-dur").textContent = fmtSec(ev.duration);
+      if (!editDur) editDur = ev.duration;
+    }
+  });
+  // 时间线点击/拖动定位播放头
+  const tlBox = $("edit-timeline");
+  function tlClickPos(e) {
+    const rect = tlBox.getBoundingClientRect();
+    const scroll = tlBox.scrollLeft;
+    return (e.clientX - rect.left + scroll) / tlPPS;
+  }
+  tlBox.addEventListener("click", e => {
+    if (e.target.closest(".tl-clip")) return;
+    editSeekT(tlClickPos(e));
+  });
+  let dragging = false;
+  tlBox.addEventListener("mousedown", e => {
+    if (e.target.closest(".tl-clip")) return;
+    dragging = true;
+    editSeekT(tlClickPos(e));
+  });
+  window.addEventListener("mousemove", e => {
+    if (dragging) editSeekT(tlClickPos(e));
+  });
+  window.addEventListener("mouseup", () => { dragging = false; });
+  // 键盘：Delete 删除选中片段
+  window.addEventListener("keydown", e => {
+    if ($("edit-modal").classList.contains("show") && (e.key === "Delete" || e.key === "Backspace")) {
+      editDelSelected();
+    }
+  });
+})();
+</script>
+</body>
+</html>

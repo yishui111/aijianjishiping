@@ -117,25 +117,12 @@ _sessions/
 sessions/
 
 # ===== aijianjishiping 专属 =====
-# 引擎/便携运行包（各 Studio 目录内，clone 后由 DEPLOY 放入）
-ComfyUI_windows_portable/
-python_embeded/
-ComfyUI/
-# 出图产物与测试素材（本仓库只保留代码/脚本/文档）
-*/pipeline/output/
-*/pipeline/logs/
-*/pipeline/data/
+# AI Video Studio（本仓库核心）：自研代码随仓库分发；
+# 其重件（runtime/models/offline/素材等）由 ai-video-studio/.gitignore 屏蔽
+/部署方案.md
 test_data/
-测试产出_最近/
-tools/ffmpeg/
+验证产物/
 Shotcut/
 offline/
 materials/
 analysis/
-# AI Video Studio 独立项目（未随仓库分发）
-ai-video-studio/
-# 引擎内的模型/自定义节点来源（clone 后自行放回）
-custom_nodes/
-models/ollama/
-models/whisper/
-models/chinese-clip/

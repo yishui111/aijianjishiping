@@ -1,14 +1,15 @@
 <div align="center">
 
-# 🎬 AI 图像/视频生成剪辑工作室合集（AI 出片系统）
+# 🎬 AI Video Studio — 本地 AI 视频智能剪辑系统
 
 > ⭐ **喜欢这个项目？请先点个 Star ⭐ 支持一下，让更多人看到！**
 
 ![GitHub stars](https://img.shields.io/github/stars/yishui111/aijianjishiping.svg?style=flat-square&color=orange)
 ![GitHub forks](https://img.shields.io/github/forks/yishui111/aijianjishiping.svg?style=flat-square)
-![GitHub repo size](https://img.shields.io/github/repo-size/yishui111/aijianjishiping.svg?style=flat-square)
 
-**一个多引擎 AI 图像 / 视频生成剪辑工作室合集：二次元出图、写实出图、镜头成片、官方风格界面…… 用 `control_menu.bat` 统一管理启动与停止。**
+**本地视频素材的 AI 剪辑系统：导入素材 → AI 理解 → 对话/场记单/剧本 → 自动剪片 → 时间线精修 → 导出成片。全程本地运行，数据不出门，可选全离线。**
+
+> 仓库名 `aijianjishiping` 为历史命名（该目录早前还包含已废弃的 AI 出图工作室，现已清理删除，仅保留本系统）。
 
 </div>
 
@@ -16,134 +17,73 @@
 
 ## ✨ 项目简介
 
-本项目把多个**本地 AI 生成 / 剪辑工作台**整合到一个目录、用统一菜单管理，一条龙完成
-「剧本 JSON → 出图（二次元 / 写实）→ manifest 清单 → 镜头视频 → 成片」的完整流程：
+把一个（或多个）视频素材文件夹交给本系统：它会先用视觉语言模型 + 语音转写 + 向量检索把素材**理解成"场记单"**（场景/人物/台词/关键帧），然后你既可以像聊天一样说"把孙悟空打斗的片段剪成 2 分钟"，也可以基于场记单勾选片段、或让它按剧本逐镜头剪辑，最后用**剪映式时间线**精修后无损导出成片。
 
-| Studio 目录 | 干什么 | 引擎 | 工作台端口 |
-|---|---|---|---|
-| `Illustrious_ImageStudio` | **二次元动漫出图**（Illustrious XL，锁角色） | ComfyUI(8188) | 8093 |
-| `FLUX2_ImageStudio` | **写实 / 场景出图**（FLUX.2 Klein 9B，锁角色） | ComfyUI(8189) | 8092 |
-| `illustrious_ui` | **官方风格网页界面**（Gradio 风格对话框出图） | 依赖二次元引擎 | 7860 |
-| `Camera_Studio` | **镜头工作台**：图片 → Ken Burns 运镜视频 → 拼接成片 | 纯 ffmpeg，无需显卡 | 8094 |
-| `control_menu.bat` | 统一启动 / 停止 / 状态检查 | — | — |
-
-> ℹ️ `model_pad`（8095 极简模型调试台）与 `ai-video-studio`（AI 视频素材剪辑系统）是
-> 同一文件夹里并列的本机项目，**未随本仓库分发**（见 FAQ）。
-
-> 💡 本仓库只包含**自研代码 / 启动脚本 / 工作流 / 文档**。
-> ComfyUI 引擎、模型权重、ffmpeg、素材等**大文件需自行下载**，见下方「大件资源」与 [DEPLOY.md](DEPLOY.md)。
+- **自研实现**：三级流水线（理解→方案→执行）+ 时间线编辑器均为本项目自有代码
+- **本地优先**：默认用本地 Ollama 模型，素材不出本机；可选接入线上 DeepSeek 提升剧本质量
+- **原生模式**：无需 Docker（Windows 双击 `start_local.bat` 即跑），Docker 版保留可选
+- 8G 显存/CPU 均可运行（模型按需加载，分析后自动卸载释放显存）
 
 ## 🎯 主要功能
 
-- 🕹️ **统一控制菜单** `control_menu.bat`：一键起停所有出图引擎与工作台，带端口状态检查
-- 🎌 **二次元出图**：Illustrious XL 文生图 + IPAdapter「锁角色」图生图，中文提示词自动翻译
-- 🌅 **写实出图**：FLUX.2 Klein 9B（GGUF），文生图 + Reference 锁角色，8G/16G 显存可切换档位
-- 🖼️ **官方风格界面**：HuggingFace 官方 demo 风格对话框（Gradio），会锁角色、可连续出图
-- 🎥 **剧本批量出图**：剧本 JSON → 逐段出图 → 输出 `manifest.json`（图片/时长/相机/台词）
-- 🎬 **镜头工作台**：JSON 清单控镜头（推近/拉远/平移/微旋转），纯 ffmpeg Ken Burns，无需 GPU
-- 🖥️ **纯本地运行**：全部服务 `127.0.0.1` 直连，模型不离开你的电脑
+- 🔬 **L1 理解**：场景自动切分、语音转写、VLM 场景总结、逐镜头关键帧 + 中文 CLIP 画面向量
+- 📋 **场记单 + 双通道检索**：bge-m3 文字通道 + Chinese-CLIP 画面通道加权融合，毫秒级、确定性、不幻觉
+- 💬 **对话剪辑**：本地 7B 模型听懂自然语言指令（"保留 2-4 分钟""去静音""精彩集锦"等），规则引擎 + 工具调用双保险
+- 📝 **剧本批量剪辑**：喂场记生成镜头剧本 → 自动逐镜头匹配素材片段 → 勾选合并出片
+- ✂️ **剪映式时间线**：大预览窗 + 轨道缩略图/波形 + 播放头 + 分割/删除/撤销 + 跨素材合并 + 无损导出
+- 🎛️ **L3 执行**：ffmpeg 精确裁剪、拼接自动归一化、变速、去静音、1080p 导出
+- 🧵 长视频分段分析、CPU 线程/显存资源限制防烧机
 
 ## 🗂️ 目录结构
 
 ```
 aijianjishiping/
-├── control_menu.bat        # 统一控制菜单（启动/停止所有 Studio）
-├── start.bat / stop.bat    # 总入口 / 总停止（等价菜单操作）
-├── README.md               # 本文件
-├── DEPLOY.md               # 新机器部署方案（下载引擎/模型、恢复目录结构）
-├── AI_Image_Studio_README.md  # 原版使用说明（菜单 [H] 帮助）
-├── docs/workflows/         # 各 Studio 自研工作流代码说明（每文件用途）
-├── Illustrious_ImageStudio/   # 二次元出图：启动脚本 + pipeline 工作流代码
-├── FLUX2_ImageStudio/         # 写实出图：启动脚本 + pipeline 工作流代码
-├── Camera_Studio/             # 镜头工作台：启动脚本 + pipeline 工作流代码
-└── illustrious_ui/            # 官方风格界面（Gradio app.py + 启动脚本）
+├── ai-video-studio/          # 系统本体（见其 README.md）
+│   ├── services/
+│   │   ├── analyzer/         # L1 理解：场景/ASR/VLM/向量
+│   │   ├── planner/          # L2 方案：对话/剧本/场记单 API + Web 前端
+│   │   ├── executor/         # L3 执行：ffmpeg 剪辑
+│   │   └── common/           # 共享库（clip/media/util）
+│   ├── scripts/              # 构建/启动脚本
+│   ├── config/               # 操作目录（operation-catalog.json）
+│   ├── docs/                 # 实施方案与部署手册
+│   ├── start_local.bat       # 原生模式一键启动（推荐）
+│   ├── stop_local.bat
+│   └── .env.example          # 配置模板（复制为 .env 填写）
+├── README.md / DEPLOY.md / AGENTS.md
 ```
 
-## 🚀 快速开始（拉到新电脑即可部署）
+## 🚀 快速开始（换电脑部署）
 
-### 环境要求
+| 方式 | 操作 | 说明 |
+| ---- | ---- | ---- |
+| **A（推荐，100%）** | U 盘/网盘把**原项目整份文件夹**（含 `ai-video-studio\runtime` + `models` 约 14GB）复制到新电脑 | 双击 `ai-video-studio\start_local.bat` 即用 |
+| **B（代码装配）** | `git clone` 本仓库 → 按 [DEPLOY.md](DEPLOY.md) 补齐大件 | 需下载/复制 runtime 与模型 |
 
-- 操作系统：Windows 10/11 64 位
-- 显卡：NVIDIA（出图类 Studio 需要，8GB 可跑、16GB 流畅；Camera_Studio 纯 ffmpeg 不需要）
-- 运行时：ComfyUI Windows 便携包自带 Python（出图）；Camera_Studio 需要系统 Python 3.8+ 与 ffmpeg
-- 磁盘：出图模型单个 1~10GB，请预留足够空间
+详情见 [DEPLOY.md](DEPLOY.md) 与 `ai-video-studio\README.md`、`ai-video-studio\docs\implementation-plan.md`。
 
-### 1. 克隆
+## 📥 大件资源（不入库，部署时获取）
 
-```bash
-git clone https://github.com/yishui111/aijianjishiping.git
-cd aijianjishiping
-```
+| 资源 | 大小 | 获取 |
+| ---- | ---- | ---- |
+| `ai-video-studio\runtime\`（venv + Ollama 便携版） | ~4.5GB | 方式 A 母版复制；或按 implementation-plan 重建 venv + 下载 Ollama |
+| `ai-video-studio\models\`（qwen2.5vl:3b / qwen2.5:7b / bge-m3 / whisper / chinese-clip） | ~9.8GB | 母版复制或按部署文档下载 |
+| ffmpeg | — | runtime 内含或系统 PATH |
 
-### 2. 安装引擎与模型
+## ❓ 常见问题
 
-引擎与模型**不随仓库分发**（体积大），请严格按 [DEPLOY.md](DEPLOY.md) 操作：
-下载 ComfyUI Windows 便携包与对应模型 → 放入各 Studio 目录中约定位置 → 目录结构即恢复为可运行状态。
-
-### 3. 启动
-
-```bat
-:: 方式一：总入口
-start.bat
-
-:: 方式二：直接双击控制菜单
-control_menu.bat
-```
-
-控制菜单按键：
-`[1]` 二次元出图（引擎 8188 + 工作台 8093） · `[2]` 写实出图（引擎 8189 + 工作台 8092）
-`[3]` 官方风格界面 7860 · `[5]` 镜头工作台 8094 · `[S]` 全部停止 · `[H]` 帮助
-
-> 菜单里还有 `[4]` model_pad（调试台）与 `[6]` AI Video Studio：它们是原机并列的本地项目，
-> **未随本仓库分发**，克隆仓库后这两项不可用（FAQ 有说明）。
-
-### 4. 验证
-
-浏览器打开 <http://127.0.0.1:8093>（二次元）或 <http://127.0.0.1:8092>（写实），
-输入提示词能出图即部署成功。端口速查见下方。
-
-## 📥 大件资源下载（模型 / 引擎 / 运行时）
-
-| 资源 | 用途 | 下载地址 / 获取方式 | 大小 |
-| ---- | ---- | ---- | ---- |
-| ComfyUI Windows 便携包 | 两个出图 Studio 的引擎 | ComfyUI 官方 GitHub（`comfyanonymous/ComfyUI` releases / 官方便携包），放入 `Illustrious_ImageStudio\ComfyUI_windows_portable` 与 `FLUX2_ImageStudio\ComfyUI_windows_portable` | ~2-5GB/份 |
-| Illustrious-XL-v1.0（或 v0.1） | 二次元主力模型 | 模型站（如 Hugging Face / Civitai）下载 `Illustrious-XL-v1.0.safetensors` 等 → `models\checkpoints\` | 6.94GB |
-| IPAdapter Plus 模型 + CLIP Vision | 二次元「锁角色」 | IPAdapter_plus（GitHub `cubiq/ComfyUI_IPAdapter_plus`）配套模型 → `models\ipadapter\`、`models\clip_vision\` | ~2-7GB |
-| FLUX.2 Klein 9B GGUF | 写实主力模型 | 社区量化版：`flux-2-klein-base-9b-Q8_0.gguf`(16G) / `Q5_K_M`(8G) → `models\diffusion_models\` | 7-10GB |
-| Qwen3-8B fp8 编码器 + flux2 VAE | FLUX.2 文本编码 / VAE | → `models\text_encoders\`、`models\vae\` | ~9GB |
-| ComfyUI 自定义节点 | GGUF/KJNodes/IPAdapter Plus | ComfyUI Manager 内安装或 Git 克隆到 `custom_nodes\` | 数 MB |
-| ffmpeg | Camera_Studio 镜头引擎 | ffmpeg 官方构建（gyan.dev 等）→ 放入 `Camera_Studio\tools\ffmpeg\bin\` 或加入 PATH | ~100MB |
-| Ollama + qwen3:8b（可选） | 二次元中文提示词翻译 / 对话工作台 | <https://ollama.com> 安装后 `ollama pull qwen3:8b` | ~5.6GB |
-
-> 文件名/放置目录务必与各 Studio `pipeline` 代码中的常量一致（见 `docs/workflows/` 各说明），
-> 更细的逐 Studio 清单与显卡档位见 [DEPLOY.md](DEPLOY.md)。
-
-## 🛠️ 本地开发 & 提交
-
-```bash
-git add .
-git commit -m "feat: xxx"
-git push origin main
-```
-
-## ❓ 常见问题（FAQ）
-
-- **Q：点菜单没反应 / 引擎没起来？** A：先按 `control_menu.bat` 顶部看端口状态；引擎未运行看各 Studio 目录下 `comfy_*.log`；确认显卡驱动与模型文件齐全。
-- **Q：为什么仓库里没有 ComfyUI / 模型 / 素材？** A：它们体积巨大（几十 GB），按 [DEPLOY.md](DEPLOY.md) 下载放回对应目录即可，代码相对路径不变。
-- **Q：菜单里的 model_pad（8095）和 ai-video-studio 呢？** A：它们是本机并列的独立小项目/大项目（后者约 15GB，含模型与 Docker 运行时），不适合随仓库分发；需要时从原机目录拷贝或按其自身说明部署。
-- **Q：8G 显存能跑吗？** A：二次元 Illustrious 轻松跑（模型仅占 3-4GB）；FLUX2 出图前 `set FLUX2_QUANT=Q5_K_M` 用 8G 档（640x384/16步）。**一次只开一个出图引擎**，否则显存会爆。
-- **Q：锁角色不像？** A：denoise 调到 0.45~0.6（保外观）或 0.7+（重绘）；检查 IPAdapter 模型与 clip_vision 是否齐全、参考图是否清晰。
+- **Q：双击 start_local.bat 没反应？** A：确认 `runtime\` 与 `models\` 已就位（见 DEPLOY.md 方式 A/B）。
+- **Q：想用线上模型提升效果？** A：复制 `.env.example` 为 `.env`，填 `PLANNER_API_KEY`/`GEN_SCRIPT_API_KEY`（**不要**把 .env 提交到仓库）。
+- **Q：8G 显存能跑吗？** A：可以。模型按需加载，分析完自动卸载；也可 CPU 运行（慢）。
 
 ## ⚠️ 注意事项
 
-- 引擎（ComfyUI）与其模型版权归各自作者，请按各自许可在官网/官方渠道获取；
-- 素材（`素材/` 等）为个人使用内容，不在仓库内；不要上传他人版权素材；
-- 敏感信息（密钥、token）请放 `.env` / 环境变量，禁止提交到仓库；
-- 本仓库仅供学习交流使用。
+- `.env`、`runtime/`、`models/`、素材等**不入库**（见 `.gitignore`）；真人素材请勿上传
+- 对他人内容剪辑请注意版权与肖像权
 
 ## 📄 许可证
 
-MIT License
+MIT License（第三方组件 Ollama/Shotcut 等遵循其各自协议，均不随仓库分发）
 
 ---
 
