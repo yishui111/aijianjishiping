@@ -69,13 +69,13 @@ if (-not $ollamaUp) {
     $env:OLLAMA_KEEP_ALIVE = "2m"
     Start-Process -FilePath $OllamaExe -ArgumentList "serve" -WindowStyle Hidden
     $ready = $false
-    for ($i = 0; $i -lt 30; $i++) {
+    for ($i = 0; $i -lt 60; $i++) {   # 冷启动最多等 120 秒（机器上其他服务多时会慢）
         Start-Sleep -Seconds 2
         if (Test-Port 11434) {
             try { $null = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -TimeoutSec 2; $ready = $true; break } catch {}
         }
     }
-    if (-not $ready) { Write-Host "错误：Ollama 启动失败（60 秒超时）"; exit 1 }
+    if (-not $ready) { Write-Host "错误：Ollama 启动失败（120 秒超时）"; exit 1 }
     Write-Host "  [OK] Ollama 已就绪"
 } else {
     Write-Host "[1/3] Ollama 已在运行"
