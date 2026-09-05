@@ -98,6 +98,7 @@ class ChatRequest(BaseModel):
 class ScanRequest(BaseModel):
     folder: str = "."
     force: bool = False  # True = 已分析也重跑（补台词/刷新标注）
+    mode: str = "full"   # full=完整分析；asr=只提取字幕（语音转写）
 
 
 MEDIA_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".ts", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -740,7 +741,7 @@ def list_materials(folder: str = "."):
 def api_scan(req: ScanRequest):
     """代理 analyzer 的 /scan：启动异步分析，返回 scan_id（前端轮询进度）。"""
     try:
-        r = httpx.post(f"{ANALYZER_URL}/scan", json={"folder": req.folder, "force": req.force}, timeout=30)
+        r = httpx.post(f"{ANALYZER_URL}/scan", json={"folder": req.folder, "force": req.force, "mode": req.mode}, timeout=30)
         r.raise_for_status()
         return r.json()
     except Exception as exc:
@@ -1899,6 +1900,103 @@ def api_export_jianying(req: ExportJianyingRequest):
         "duration_sec": round(sum(s["end"] - s["start"] for s in sels), 1),
         "materials": len(infos),
     }
+
+
+# ---------- 字幕剪辑：本地字幕模型出台词 → 勾选/智能选台词 → 剪出片段 ----------
+class TranscribeRequest(BaseModel):
+    file: str
+    force: bool = False
+
+
+@app.post("/api/transcribe")
+def api_transcribe(req: TranscribeRequest):
+    """提取字幕：代理 analyzer /transcribe（只跑本地语音转写，不跑画面理解）。"""
+    try:
+        r = httpx.post(f"{ANALYZER_URL}/transcribe",
+                       json={"file": req.file, "force": req.force}, timeout=3600)
+        return r.json() if r.status_code == 200 else {"error": r.text}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+class MatchLinesRequest(BaseModel):
+    query: str
+    lines: list[dict]  # [{i, start, end, text}]
+
+
+@app.post("/api/match_lines")
+def api_match_lines(req: MatchLinesRequest):
+    """一句话智能勾选：把台词清单交给对话模型（线上 DeepSeek / 本地 qwen），挑出相关的台词行。
+
+    台词文本+时间戳都是确定性数据，模型只做"文本相关性挑选"，不猜画面——这是可靠的用法。
+    """
+    if not req.lines:
+        return {"error": "台词清单为空（先提取字幕）"}
+    listing = "\n".join(
+        f"{l.get('i')}: [{float(l.get('start', 0)):.1f}-{float(l.get('end', 0)):.1f}s] {l.get('text', '')}"
+        for l in req.lines)
+    prompt = (
+        "你是字幕选段助手。下面是一段视频的全部台词（行号: [起-止秒] 台词）。\n"
+        f"用户想要的内容：「{req.query}」\n\n"
+        "请挑出与用户想要相关的所有台词行，宁可多选不要漏选，但明显无关的不要选。\n"
+        "只输出 JSON：{\"pick\":[{\"i\":行号,\"reason\":\"不超过12字的理由\"}]}\n\n"
+        "台词清单：\n" + listing
+    )
+    try:
+        msg = _llm_chat(
+            [{"role": "system", "content": "你是严谨的字幕选段助手，严格按格式输出 JSON。"},
+             {"role": "user", "content": prompt}],
+            timeout=180,
+        )
+        data = util.parse_llm_json(msg.get("content") or "")
+        picked = []
+        if isinstance(data, dict) and isinstance(data.get("pick"), list):
+            valid = {int(l.get("i")) for l in req.lines if str(l.get("i", "")).lstrip("-").isdigit()}
+            for item in data["pick"]:
+                try:
+                    i = int(item.get("i"))
+                except (TypeError, ValueError):
+                    continue
+                if i in valid:
+                    picked.append({"i": i, "reason": str(item.get("reason", ""))[:24]})
+        if not picked:
+            return {"error": "模型没挑出台词（换个说法再试，或手动勾选）", "picked": []}
+        return {"picked": picked, "total": len(req.lines)}
+    except Exception as exc:
+        return {"error": f"智能选台词失败: {exc}", "picked": []}
+
+
+class BurnSrtRequest(BaseModel):
+    output: str       # 成片相对路径（取末两段 job/文件名）
+    srt: str          # SRT 文本
+    font_size: int = 18
+
+
+@app.post("/api/burn_srt")
+def api_burn_srt(req: BurnSrtRequest):
+    """给成片烧录硬字幕（libass）：选中的台词直接压进画面，交付即带字幕。"""
+    parts = [x for x in re.split("[\\/]+", req.output) if x][-2:]
+    if len(parts) != 2:
+        return {"error": "成片路径格式不对"}
+    src = (OUTPUT_DIR / parts[0] / parts[1]).resolve()
+    if not src.is_relative_to(OUTPUT_DIR.resolve()) or not src.is_file():
+        return {"error": f"成片不存在: {parts[0]}/{parts[1]}"}
+    srt_path = src.with_suffix(".srt")
+    srt_path.write_text(req.srt, encoding="utf-8-sig")
+    dst = src.with_name(src.stem + "_sub.mp4")
+    style = f"FontName=Microsoft YaHei,FontSize={int(req.font_size)},Outline=1,Shadow=0,MarginV=24"
+    # subtitles 滤镜对 Windows 路径转义很挑剔：切到成片目录用相对文件名
+    import subprocess
+
+    proc = subprocess.run(
+        [media.ffmpeg(), "-y", "-v", "error", "-i", src.name,
+         "-vf", f"subtitles={srt_path.name}:force_style='{style}'",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy", dst.name],
+        cwd=str(src.parent), capture_output=True, text=True, errors="replace", timeout=3600,
+    )
+    if proc.returncode != 0:
+        return {"error": (proc.stderr or "烧录失败")[-400:]}
+    return {"output": f"{parts[0]}/{dst.name}", "url": f"/output/{parts[0]}/{dst.name}"}
 
 
 def _fmt_srt_ts(sec: float) -> str:

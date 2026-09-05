@@ -64,6 +64,7 @@ class AnalyzeRequest(BaseModel):
 class ScanRequest(BaseModel):
     folder: str = "."
     force: bool = False  # True = 已分析也重跑（旧分析补台词/刷新 CLIP 标注）
+    mode: str = "full"   # full=完整分析；asr=只跑语音转写（提取字幕，秒级/分钟级，不跑画面理解）
 
 
 class QuerySegmentRequest(BaseModel):
@@ -800,6 +801,54 @@ def analyze(req: AnalyzeRequest):
     return analyze_one(req.file, req.force)
 
 
+def _transcribe_only(file: str, force: bool = False) -> dict:
+    """只跑语音转写（本地字幕模型），不跑画面理解——字幕剪辑的最小依赖。
+
+    已有分析文档则只更新其 speech 字段；没有则生成一份只含字幕字段的精简文档。
+    """
+    src = (MATERIALS / file).resolve()
+    if not src.exists() or not src.is_relative_to(MATERIALS.resolve()):
+        raise HTTPException(404, f"素材不存在: {file}")
+    analysis_path, frames_dir = _analysis_paths(src)
+    old = util.load_json(analysis_path) if analysis_path.exists() else None
+    if old and old.get("speech") and not force:
+        return {"file": file, "speech": old["speech"], "duration_sec": old.get("duration_sec"), "cached": True}
+    info = media.probe(src)
+    speech = _asr(src)
+    if old:
+        old["speech"] = speech
+        old.setdefault("analysis_meta", {})["asr_at"] = util.now_iso()
+        util.save_json(analysis_path, old)
+        a = old
+    else:
+        a = {
+            "schema_version": 1,
+            "file": src.relative_to(MATERIALS.resolve()).as_posix(),
+            "duration_sec": info.get("duration_sec"),
+            "resolution": info.get("resolution"),
+            "fps": info.get("fps"),
+            "has_audio": bool(info.get("has_audio")),
+            "language": None,
+            "summary": None,
+            "tags": [],
+            "scenes": [],
+            "faces": [],
+            "speech": speech,
+            "silent_segments": [],
+            "audio_stats": None,
+            "analysis_meta": {"asr": ASR_MODEL, "mode": "asr-only", "analyzed_at": util.now_iso(),
+                              "analysis_dir": str(frames_dir)},
+        }
+        util.save_json(analysis_path, a)
+    return {"file": file, "speech": speech, "duration_sec": a.get("duration_sec"), "cached": False}
+
+
+@app.post("/transcribe")
+def transcribe(req: AnalyzeRequest):
+    """提取字幕：只跑本地语音转写，返回带时间戳的台词列表。"""
+    return _transcribe_only(req.file, req.force)
+
+
 @app.post("/scan")
 def scan(req: ScanRequest):
     """启动异步扫描分析：立即返回 scan_id，进度通过 /scan_status 轮询。"""
@@ -835,8 +884,12 @@ def scan(req: ScanRequest):
             for rel in list(state["files"]):
                 state["current"] = rel
                 try:
-                    a = analyze_one(rel, req.force)
-                    state["results"].append({"file": rel, "ok": True, "scenes": len(a.get("scenes") or [])})
+                    if req.mode == "asr":
+                        a = _transcribe_only(rel, req.force)
+                        state["results"].append({"file": rel, "ok": True, "scenes": 0, "lines": len(a.get("speech") or [])})
+                    else:
+                        a = analyze_one(rel, req.force)
+                        state["results"].append({"file": rel, "ok": True, "scenes": len(a.get("scenes") or [])})
                     state["ok"] += 1
                 except Exception as exc:
                     state["results"].append({"file": rel, "ok": False, "error": str(exc)})

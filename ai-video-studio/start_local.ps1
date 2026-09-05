@@ -13,7 +13,8 @@ $VenvPython = Join-Path $Root "runtime\venv\Scripts\python.exe"
 $Materials = (Resolve-Path (Join-Path $Root "..\素材") -ErrorAction SilentlyContinue).Path
 if (-not $Materials) { $Materials = Join-Path $Root "materials" }
 $ModelsDir = Join-Path $Root "models\ollama\models"
-$WhisperDir = Join-Path $Root "models\whisper"
+# 字幕模型：models\whisper-medium（更精准的 medium，约1.5GB）存在则优先用，否则用内置 small
+$WhisperDir = if (Test-Path (Join-Path $Root "models\whisper-medium\model.bin")) { Join-Path $Root "models\whisper-medium" } else { Join-Path $Root "models\whisper" }
 $OutputDir = Join-Path $Root "output"
 $ConfigDir = Join-Path $Root "config"
 $LogDir = Join-Path $Root "runtime\logs"

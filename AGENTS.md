@@ -54,4 +54,5 @@
 - services/common/jianying_draft.py 生成剪映明文草稿（draft_content.json/draft_meta_info.json，微秒时间轴，素材绝对路径，剪映打开自动补全字段）；planner `/api/export_jianying` 探测 `%LOCALAPPDATA%/JianyingPro/User Data/Projects/com.lveditor.draft`（或 JIANYING_DRAFT_DIR）自动复制草稿，找不到给 zip 下载（`/exports/{path}`，注意防穿越已测）；`/api/export_srt` 把选区内 ASR 台词平移到成片时间轴——**依赖分析文档 speech 字段，旧分析（ASR 修复前）在目录页点「🔁 重新分析（覆盖）」补台词**（/scan 已透传 force；/api/waveform 结果有磁盘缓存 `_analysis/*.wave.json`，mtime 失效自动重算）
 - planner 新增 OUTPUT_DIR 环境变量（start_local.ps1 planner 分支注入），导出产物在 output/exports/
 - 时间线升级（planner/static/index.html）：拖左右黄边裁剪（钳制在源时长内、最短 0.2s）/拖片段排序/redo 栈/复制片段/快捷键（空格/S/Del/Ctrl+D/Ctrl+Z/Ctrl+Y/←→）；导出剪映草稿+SRT 入口有三处：时间线面板、场记勾选栏、AI 自动剪辑结果
+- 前台已重构为三 Tab 对应后台服务：①素材分析=analyzer:8001（含免分析批量剪）②剪辑出片=planner:8003+executor:8002（素材勾选→AI自动剪/手动精剪/场记单→成片/剪映草稿/SRT）③进阶剧本=planner:8003；原目录页"时间线剪辑"下拉入口与步骤条已删（loadEditFiles/openEditFromSel/markStep 已移除），手动精剪统一走②勾选入口，showTab() 切换
 - 实测数据与改动全表见 avs/docs/implementation-plan.md 第 16 节
