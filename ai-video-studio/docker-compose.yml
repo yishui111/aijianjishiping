@@ -82,6 +82,7 @@ services:
       - PLANNER_BASE_URL=${PLANNER_BASE_URL:-http://ollama:11434/v1}
       - PLANNER_MODEL=${PLANNER_MODEL:-qwen2.5vl:3b}
       - PLANNER_API_KEY=${PLANNER_API_KEY:-}
+      - OLLAMA_BASE=http://ollama:11434
       - ANALYZER_URL=http://analyzer:8001
       - EXECUTOR_URL=http://executor:8002
       - MATERIALS_DIR=/materials

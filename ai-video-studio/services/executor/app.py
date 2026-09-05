@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -67,14 +69,40 @@ def cut_copy(req: CutCopyRequest):
 
 # ---------- 剪辑操作 ----------
 
+_COPY_VERIFY_TOLERANCE = 0.25  # 流切时长与请求时长的最大允许偏差（秒）
+_COPY_VERIFY_MAX_DUR = 180.0   # 超长剪切不回读校验（重编码代价太大），接受关键帧级精度
+
+
 def _trim(src: Path, dst: Path, start: float, end: float):
-    """流剪切（stream copy，不重编码）：素材为标准视频时无损秒级，画质零损失。"""
+    """剪切 [start, end)：先试无损流切，切点因关键帧稀疏漂移时自动改帧级精准重编码。
+
+    背景：-c copy 只能从关键帧开始切。老剧/低码率转码源（如 AV1/HEVC 老片）关键帧
+    间隔可达 5~10 秒，剪 1.5 秒实际得 5 秒，相邻片段还会内容重复。因此流切后回读
+    成品时长校验：偏差超过阈值就重切（-ss 在 -i 前配转码 = 帧级精准）。
+    """
     dur = max(0.1, end - start)
     args = [media.ffmpeg(), "-y"]
     if start and start > 0:
         args += ["-ss", f"{start}"]  # fast seek（关键帧对齐）
     args += ["-i", str(src), "-t", f"{dur}", "-c", "copy", "-avoid_negative_ts", "make_zero", str(dst)]
     media.run(args)
+    if dur > _COPY_VERIFY_MAX_DUR:
+        return
+    try:
+        got = media.probe(dst).get("duration_sec") or 0
+    except Exception:
+        return
+    if abs(got - dur) <= _COPY_VERIFY_TOLERANCE:
+        return
+    # 关键帧稀疏导致漂移：就近解码后精准重编码（同分辨率，无 pad/缩放）
+    media.run(
+        [
+            media.ffmpeg(), "-y", "-ss", f"{start}", "-i", str(src), "-t", f"{dur}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-ar", "44100",
+            "-avoid_negative_ts", "make_zero", str(dst),
+        ]
+    )
 
 
 def _speed(src: Path, dst: Path, factor: float):
@@ -108,11 +136,11 @@ def _normalize(src: Path, dst: Path):
 
 
 def _same_spec(paths: list[Path]) -> bool:
-    """所有输入是否同编码/同分辨率（同规格才能无损拼接）。"""
+    """所有输入是否同编码/同分辨率/同帧率（同规格才能无损拼接）。"""
     specs = set()
     for p in paths:
         info = media.probe(p)
-        specs.add((info.get("video_codec"), info.get("resolution"), bool(info.get("has_audio"))))
+        specs.add((info.get("video_codec"), info.get("resolution"), info.get("fps"), bool(info.get("has_audio"))))
     return len(specs) <= 1
 
 

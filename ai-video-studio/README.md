@@ -93,12 +93,29 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
 ## 当前实现范围
 
-- ✅ 理解：ffprobe 探测、场景切分、关键帧、VLM 逐场景语义、ASR 转写、静音检测 → analysis.json + manifest.json
-- ✅ 执行：trim / remove_silence / concat / speed / export，concat 前自动归一化，dry-run 预览 + 审计
-- ✅ 方案：对话接口 + 工具调用（query_segment 精读、search_semantic 语义检索、preview / execute）
-- ✅ 网页预览与手动精剪：素材卡片「👁 预览」→ 浏览器直接播放素材（Range 流式，可拖进度条）、手动起止时间（秒 / 分:秒）、试播区间、一键出片（`/api/clip`，不经过 LLM）
+- ✅ 理解：ffprobe 探测、场景切分、关键帧、VLM 逐场景语义（**可选**）、CLIP 零样本场景标注（免 VLM 兜底）、ASR 转写、静音检测 → analysis.json + manifest.json
+- ✅ **AI 自动剪辑**：一句话需求 + 目标时长 → CLIP 画面向量 + bge-m3 语义 + 台词多信号打分 → 自动选段 → 无损出片（网页「🤖 AI 自动剪辑」或 POST `/api/auto_edit`）
+- ✅ **视觉大模型可选**：本机跑不动 VLM 时在 `.env` 设 `VLM_ENABLED=false`，分析改用 Chinese-CLIP 零样本标注（完全本地、秒级），向量检索/自动剪辑不受影响；VLM 调用连续失败也会自动熔断转 CLIP
+- ✅ **重新分析（覆盖）**：旧分析缺台词（SRT/检索要用）或想换标注方式时，目录页点「🔁 重新分析」强制重跑；波形提取结果带磁盘缓存，时间线反复打开不重算
+- ✅ 执行：trim（关键帧对齐无损优先，漂移自动转帧级精准重编码）/ remove_silence / concat / speed / export，concat 前自动归一化，dry-run 预览 + 审计
+- ✅ 方案：对话接口（规则引擎优先，模型兜底，支持线上 DeepSeek）+ 工具调用（query_segment 精读、search_semantic 语义检索、preview / execute）
+- ✅ 网页工作台：素材卡片预览/手动精剪、剪映式时间线（胶片条+波形、拖边裁剪/拖动排序/分割/复制/删除/撤销恢复/快捷键）、场记单检索勾选出片、文本剧本直接剪、免分析批量剪辑
+- ✅ **导出剪映草稿 / SRT**：AI 粗剪的选段一键变成剪映首页可见的草稿（素材绝对路径，打开剪映继续精修，也可下载 zip 手动放进剪映草稿库）；选段台词同步导出 SRT 字幕。入口：时间线剪辑、场记单勾选、AI 自动剪辑结果三处
 - ⏳ 人脸嵌入与按人像检索（P1b，默认关闭，`FACE_ENABLED=true` 后启用）
 - ⏳ 空闲时段自动调度（P1b，当前提供手动 /scan 与任务计划触发）
+
+## 本机跑不动视觉大模型？（常见）
+
+`qwen2.5vl:3b` 需要 6GB+ 显存，跑不动很正常。在 `ai-video-studio\.env` 里设：
+
+```
+VLM_ENABLED=false    # 分析不再调 VLM，场景描述由 CLIP 零样本标注兜底
+ASR_DEVICE=cpu       # 机器缺 CUDA 运行库（cublas64_12.dll 等）时转写强制走 CPU
+```
+
+关闭后系统的核心能力不受影响：场景切分、关键帧、CLIP 画面向量、bge-m3 检索、AI 自动剪辑、
+场记单、时间线剪辑全部照常；只是场景"描述"从自由文本变成标签式短语（如"画面:打斗动作/人物特写"）。
+对话规划建议配线上 DeepSeek（`.env` 填 `PLANNER_API_KEY`），比本地 7B 快且稳得多。
 
 ## 部署手册（完整版）
 

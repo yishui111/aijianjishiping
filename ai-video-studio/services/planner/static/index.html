@@ -111,9 +111,9 @@
   </header>
 
   <div class="modelbar" id="model-bar">
-    <span class="muted">🧠 分析模型（qwen2.5vl:3b）：</span>
+    <span class="muted">🧠 视觉大模型（可选，跑不动可关）：</span>
     <b id="model-state">未加载</b>
-    <span class="muted" id="model-detail">按需加载——点「分析」才启动，其他操作自动释放显存</span>
+    <span class="muted" id="model-detail">分析和检索都有免 VLM 的兜底（CLIP 场景标注）；点「分析」才按需加载</span>
   </div>
 
   <div class="steps">
@@ -130,6 +130,7 @@
     <div id="folder-list"></div>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="btn-scan" onclick="scanFolder()">▶ 分析所选目录</button>
+      <button class="btn secondary" id="btn-rescan" onclick="scanFolder(true)" title="已分析的也重跑：给旧分析补台词（ASR）/刷新 CLIP 标注。会覆盖原分析结果">🔁 重新分析（覆盖）</button>
       <button class="btn secondary" id="btn-refresh" onclick="loadFolders()">🔄 刷新状态</button>
       <button class="btn secondary" id="btn-goto-mats" onclick="gotoMaterials()" disabled>下一步：选择素材 →</button>
     </div>
@@ -166,9 +167,9 @@
     <div id="batch-list"></div>
   </div>
 
-  <!-- 步骤4：素材选择 + 对话 -->
+  <!-- 步骤4：素材选择 -->
   <div class="card hidden" id="card-chat">
-    <h2>🎞️ 素材选择与 AI 对话 <span class="hint" id="mat-hint"></span></h2>
+    <h2>🎞️ 素材选择 <span class="hint" id="mat-hint"></span></h2>
     <div class="selbar">
       <button class="btn secondary sm" onclick="backToFolders()">← 返回目录</button>
       <span class="count" id="sel-count">已选 0 个素材</span>
@@ -180,6 +181,21 @@
     <div class="muted" style="margin-top:4px">💡 勾选多个素材后点「🎬 合并到时间线剪辑」——每个素材在时间线上是一段，可分割/删除/拼接出片。</div>
     <div id="mat-loading" class="muted hidden"><span class="loading"></span>加载素材...</div>
     <div class="grid" id="mat-list"></div>
+
+    <h2 style="margin-top:22px">🤖 AI 自动剪辑 <span class="hint">一句话需求 + 目标时长 → 向量打分自动选段出片（免视觉大模型）</span></h2>
+    <div class="chatbar" style="margin-bottom:8px">
+      <input type="text" id="auto-query" placeholder="想要什么（可留空）：如 孙悟空打斗 / 两人对话 / 海边风景" style="flex:1">
+      <span class="muted">目标时长</span>
+      <input type="number" id="auto-target" value="60" min="5" step="5" style="width:74px" title="秒">
+      <span class="muted">秒</span>
+      <select id="auto-order" style="min-width:130px">
+        <option value="time">按时间线顺序</option>
+        <option value="score">按相关度排序</option>
+      </select>
+      <button class="btn ok" id="btn-auto-edit" onclick="autoEdit()">🤖 自动剪辑并出片</button>
+    </div>
+    <div class="muted" style="margin-top:2px">对上面勾选的素材生效：场景切分 + CLIP 画面向量 + bge-m3 语义 + 台词自动打分，凑够目标时长即停，无损秒级出片。</div>
+    <div id="auto-result"></div>
 
     <h2 style="margin-top:22px">📜 剧本批量剪辑 <span class="hint">写剧本 → 向量匹配场记 → 出片</span></h2>
     <div class="chatbar" style="margin-bottom:8px">
@@ -209,6 +225,8 @@
     <div class="selbar" style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 12px">
       <span class="count" id="ledger-count">已勾选 0 段</span>
       <button class="btn ok" id="btn-clip-ledger" onclick="clipSelected()" disabled>✂️ 剪勾选的</button>
+      <button class="btn" id="btn-jy-ledger" onclick="exportJY([...ledgerSel.values()], '场记勾选', 'ledger-result')" disabled>🪄 导出剪映草稿</button>
+      <button class="btn secondary" id="btn-srt-ledger" onclick="exportSRT([...ledgerSel.values()], '场记勾选', 'ledger-result')" disabled>💬 导出SRT</button>
       <span class="muted" id="ledger-hint"></span>
     </div>
     <div id="ledger-list"></div>
@@ -275,7 +293,13 @@
           <button class="btn" style="width:100%;margin-bottom:6px" onclick="editPlayPause()">▶/⏸ 播放（从头）</button>
           <button class="btn sm" style="width:100%;margin-bottom:6px" onclick="editCutNow()">✂️ 在播放头处分割</button>
           <button class="btn sm secondary" style="width:100%;margin-bottom:6px" onclick="editDelSelected()">🗑 删除选中片段</button>
-          <button class="btn sm secondary" style="width:100%;margin-bottom:6px" onclick="editUndoCut()">↩️ 撤销</button>
+          <button class="btn sm secondary" style="width:100%;margin-bottom:6px" onclick="editDupSelected()">⧉ 复制选中片段</button>
+          <div style="display:flex;gap:6px;margin-bottom:6px">
+            <button class="btn sm secondary" style="flex:1" onclick="editUndoCut()">↩️ 撤销</button>
+            <button class="btn sm secondary" style="flex:1" onclick="editRedo()">↪️ 恢复</button>
+          </div>
+          <button class="btn sm" style="width:100%;margin-bottom:6px" onclick="editExportJY()">🪄 导出剪映草稿</button>
+          <button class="btn sm secondary" style="width:100%;margin-bottom:6px" onclick="editExportSRT()">💬 导出SRT字幕</button>
           <button class="btn ok" style="width:100%" id="btn-edit-clip" onclick="editClip()" disabled>💾 导出（保留拼接）</button>
           <div style="margin-top:10px;display:flex;align-items:center;gap:6px">
             <button class="btn sm secondary" onclick="tlZoom(-1)">−</button>
@@ -291,7 +315,7 @@
         </div>
       </div>
     </div>
-    <div class="muted" style="margin:8px 0">👇 时间线：播放头拖动定位；点片段选中（黄色框）；「分割」在播放头处切开；点「导出」保留全部片段拼接出片（要删的先点选再删）。</div>
+    <div class="muted" style="margin:8px 0">👇 时间线（剪映式）：点片段选中 · 拖<b>左右黄边</b>裁剪 · 拖片段<b>调整顺序</b> · 快捷键 <b>空格</b>播放 / <b>S</b> 分割 / <b>Del</b> 删除 / <b>Ctrl+D</b> 复制 / <b>Ctrl+Z</b> 撤销 / <b>Ctrl+Y</b> 恢复 / <b>←→</b> 移动播放头。导出：💾 无损拼接出片，🪄 剪映草稿拿去剪映精修，💬 SRT 台词字幕。</div>
     <div id="edit-timeline" style="position:relative;background:#0d1524;border:1px solid var(--border);border-radius:10px;padding:10px 8px;overflow-x:auto">
       <div id="tl-ruler" style="position:relative;height:20px;margin-bottom:4px;font-size:10px;color:var(--sub);white-space:nowrap"></div>
       <div id="tl-video" style="position:relative;height:88px;background:#111a2e;border-radius:6px;overflow:hidden;white-space:nowrap"></div>
@@ -317,9 +341,9 @@ function refreshModelStatus() {
     if (!el) return;
     const loaded = d.loaded || [];
     const vlmUp = loaded.some(m => String(m).split(":")[0] === "qwen2.5vl" || String(m).startsWith("qwen2.5vl"));
-    if (vlmUp) { el.textContent = "已加载"; el.className = "loaded"; $("model-detail").textContent = "分析模型就绪，正在使用中"; }
-    else if (modelLoading) { el.textContent = "加载中…"; el.className = ""; $("model-detail").textContent = "首次加载分析模型约需 1~2 分钟，请稍候"; }
-    else { el.textContent = "未加载"; el.className = ""; $("model-detail").textContent = "按需加载——点「分析」才启动，其他操作自动释放显存"; }
+    if (vlmUp) { el.textContent = "已加载"; el.className = "loaded"; $("model-detail").textContent = "分析模型就绪，正在用 VLM 写场景描述"; }
+    else if (modelLoading) { el.textContent = "加载中…"; el.className = ""; $("model-detail").textContent = "首次加载分析模型约需 1~2 分钟；加载失败会自动转 CLIP 标注兜底"; }
+    else { el.textContent = "未加载"; el.className = ""; $("model-detail").textContent = "分析和检索都有免 VLM 兜底（CLIP 场景标注）；点「分析」才按需加载"; }
   }).catch(() => {});
 }
 function unloadVLM() {
@@ -498,16 +522,18 @@ function openEditFromSel() {
 
 // ---------- 分析 ----------
 let scanTimer = null;
-async function scanFolder() {
+async function scanFolder(force) {
   if (!currentFolder) { toast("请先点击选择一个素材目录"); return; }
+  if (force && !confirm("重新分析会覆盖该目录已有分析结果（用于给旧分析补台词/刷新标注），继续？")) return;
   const btn = $("btn-scan"); btn.disabled = true;
+  $("btn-rescan").disabled = true;
   const prog = $("scan-progress");
   markModelLoading();
-  prog.innerHTML = `<span class="loading"></span>正在加载分析模型并启动分析 <b>${esc(currentFolder)}</b>（首次加载模型约 1~2 分钟）...`;
+  prog.innerHTML = `<span class="loading"></span>正在${force ? "重新" : ""}分析 <b>${esc(currentFolder)}</b>（场景切分 + CLIP 场景标注 + 语音转写${force ? "，覆盖旧结果" : ""}；如启用视觉大模型，首次加载约 1~2 分钟）...`;
   try {
-    const r = await fetch("/api/scan", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ folder: currentFolder }) });
+    const r = await fetch("/api/scan", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ folder: currentFolder, force: !!force }) });
     const data = await r.json();
-    if (data.error || !data.scan_id) { prog.innerHTML = "❌ 分析启动失败: " + esc(data.error || "无 scan_id"); stopModelPoll(); btn.disabled = false; return; }
+    if (data.error || !data.scan_id) { prog.innerHTML = "❌ 分析启动失败: " + esc(data.error || "无 scan_id"); stopModelPoll(); btn.disabled = false; $("btn-rescan").disabled = false; return; }
     const scanId = data.scan_id;
     scanTimer = setInterval(async () => {
       try {
@@ -525,11 +551,11 @@ async function scanFolder() {
             await loadFolders();
             toast(st.failed ? `分析完成，${st.failed} 个失败` : "分析完成！", st.failed ? 5000 : 2500);
           }
-          btn.disabled = false;
+          btn.disabled = false; $("btn-rescan").disabled = false;
         }
-      } catch (e) { clearInterval(scanTimer); scanTimer = null; prog.innerHTML = "❌ 进度查询出错: " + esc(e.message); btn.disabled = false; }
+      } catch (e) { clearInterval(scanTimer); scanTimer = null; prog.innerHTML = "❌ 进度查询出错: " + esc(e.message); btn.disabled = false; $("btn-rescan").disabled = false; }
     }, 2000);
-  } catch (e) { prog.innerHTML = "❌ 分析启动出错: " + esc(e.message); stopModelPoll(); btn.disabled = false; }
+  } catch (e) { prog.innerHTML = "❌ 分析启动出错: " + esc(e.message); stopModelPoll(); btn.disabled = false; $("btn-rescan").disabled = false; }
 }
 
 // ---------- 素材 ----------
@@ -706,6 +732,9 @@ let editFile = null, editDur = 0;
 let tlSegs = [];      // [{id,file,start,end,img,dur,wave}] 时间线上的片段（按顺序，file 为各自源素材）
 let tlSel = null;     // 选中的片段 id
 let tlUndo = [];      // 撤销栈
+let tlRedo = [];      // 恢复栈（撤销后可重做）
+let tlFileDur = {};   // file -> 源素材总时长（拖边裁剪时限制右边界）
+let lastAutoSels = []; // AI 自动剪辑最近一次的选段（供导出剪映草稿/SRT）
 let tlPPS = 12;       // 每秒像素（时间线缩放）
 let tlT = 0;          // 播放头位置（秒）
 let tlPlayId = 0;     // 播放动画 id
@@ -733,7 +762,7 @@ function openEditSelected() {
   openEditFiles(files, names);
 }
 async function openEditFiles(files, names) {
-  editFile = files[0] || null; editDur = 0; tlSegs = []; tlSel = null; tlUndo = []; tlT = 0; tlPlayId = 0; tlSeq = 0;
+  editFile = files[0] || null; editDur = 0; tlSegs = []; tlSel = null; tlUndo = []; tlRedo = []; tlFileDur = {}; tlT = 0; tlPlayId = 0; tlSeq = 0;
   $("edit-name").textContent = (names.length > 1 ? names.length + " 个素材合并 · " : "") + (names[0] || "");
   $("edit-result").innerHTML = "";
   $("edit-cur").textContent = "00:00";
@@ -749,6 +778,7 @@ async function openEditFiles(files, names) {
       const r = await fetch("/api/segments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file: f, cuts: [] }) });
       const d = await r.json();
       if (d.error) { toast(f + ": " + d.error); continue; }
+      tlFileDur[f] = d.duration_sec || 0;
       const segs = (d.segments || []).map(s => ({ id: "s" + (tlSeq++), file: f, start: s.start, end: s.end, dur: s.end - s.start, img: s.thumb || "", wave: null }));
       all.push(...segs);
       editDur += d.duration_sec || 0;
@@ -761,7 +791,7 @@ async function openEditFiles(files, names) {
     } catch (e) { toast(f + ": 加载失败 " + e.message); }
   }
   tlSegs = all;
-  tlSel = null; tlUndo = [];
+  tlSel = null; tlUndo = []; tlRedo = [];
   $("edit-dur").textContent = fmtSec(tlTotal());
   renderTimeline();
 }
@@ -803,7 +833,17 @@ function renderTimeline() {
     label.style.cssText = "position:absolute;left:3px;top:3px;background:rgba(0,0,0,.65);color:#fff;font-size:10px;padding:1px 5px;border-radius:3px";
     label.textContent = fmtSec(acc) + " (" + s.dur.toFixed(1) + "s)";
     b.appendChild(label);
-    b.onclick = e => { e.stopPropagation(); tlSel = s.id; renderTimeline(); editSeekT(acc + 0.1); };
+    // 剪映式拖拽：左右黄边裁剪（ew-resize 手柄），中间按住拖动排序
+    const hL = document.createElement("div");
+    hL.style.cssText = "position:absolute;left:0;top:0;width:9px;height:100%;cursor:ew-resize;background:linear-gradient(90deg,rgba(245,158,11,.5),transparent)";
+    hL.title = "拖动裁剪起点";
+    hL.onmousedown = e => { e.stopPropagation(); tlClipDown(e, s, "left"); };
+    const hR = document.createElement("div");
+    hR.style.cssText = "position:absolute;right:0;top:0;width:9px;height:100%;cursor:ew-resize;background:linear-gradient(270deg,rgba(245,158,11,.5),transparent)";
+    hR.title = "拖动裁剪终点";
+    hR.onmousedown = e => { e.stopPropagation(); tlClipDown(e, s, "right"); };
+    b.appendChild(hL); b.appendChild(hR);
+    b.onmousedown = e => { e.stopPropagation(); tlClipDown(e, s, "body"); };
     vtr.appendChild(b);
     acc += s.dur;
   });
@@ -874,7 +914,7 @@ function editCutNow() {
   if (!hit) return;
   const { seg, offset } = hit;
   if (offset < 0.15 || offset > seg.dur - 0.15) { toast("播放头在片段边缘，先移动再分割"); return; }
-  tlUndo.push(JSON.stringify(tlSegs));
+  tlPushUndo();
   const i = tlSegs.indexOf(seg);
   const a = { id: "s" + (tlSeq++), file: seg.file, start: seg.start, end: seg.start + offset, dur: offset, img: seg.img, wave: seg.wave };
   const b = { id: "s" + (tlSeq++), file: seg.file, start: seg.start + offset, end: seg.end, dur: seg.dur - offset, img: seg.img, wave: seg.wave };
@@ -885,7 +925,7 @@ function editCutNow() {
 }
 function editDelSelected() {
   if (!tlSel) { toast("先点选要删除的片段"); return; }
-  tlUndo.push(JSON.stringify(tlSegs));
+  tlPushUndo();
   const i = tlSegs.findIndex(s => s.id === tlSel);
   if (i < 0) return;
   const removed = tlSegs[i];
@@ -894,13 +934,102 @@ function editDelSelected() {
   renderTimeline();
   toast("已删除片段 [" + fmtSec(removed.start) + "-" + fmtSec(removed.end) + "]");
 }
+function editDupSelected() {
+  if (!tlSel) { toast("先点选要复制的片段"); return; }
+  const i = tlSegs.findIndex(s => s.id === tlSel);
+  if (i < 0) return;
+  tlPushUndo();
+  const src = tlSegs[i];
+  const copy = { id: "s" + (tlSeq++), file: src.file, start: src.start, end: src.end, dur: src.dur, img: src.img, wave: src.wave };
+  tlSegs.splice(i + 1, 0, copy);
+  tlSel = copy.id;
+  renderTimeline();
+  toast("已复制片段（插到原片段后面）");
+}
+function tlPushUndo() { tlUndo.push(JSON.stringify(tlSegs)); if (tlUndo.length > 100) tlUndo.shift(); tlRedo = []; }
 function editUndoCut() {
   if (!tlUndo.length) { toast("没有可撤销的操作"); return; }
+  tlRedo.push(JSON.stringify(tlSegs));
   tlSegs = JSON.parse(tlUndo.pop());
   tlSel = null;
   renderTimeline();
   toast("已撤销");
 }
+function editRedo() {
+  if (!tlRedo.length) { toast("没有可恢复的操作"); return; }
+  tlUndo.push(JSON.stringify(tlSegs));
+  tlSegs = JSON.parse(tlRedo.pop());
+  tlSel = null;
+  renderTimeline();
+  toast("已恢复");
+}
+// ---- 剪映式拖拽：拖左右黄边裁剪片段，拖片段本体调整顺序，单击选中 ----
+let tlDrag = null;
+function tlClipDown(e, seg, mode) {
+  tlSel = seg.id;
+  tlDrag = {
+    mode, seg, x0: e.clientX,
+    start0: seg.start, end0: seg.end,
+    acc0: tlClipPos(seg.id), moved: false, undoDone: false,
+  };
+  if (mode !== "body") { tlPushUndo(); tlDrag.undoDone = true; }
+  renderTimeline();
+  editSeekT(tlDrag.acc0 + (mode === "right" ? seg.dur : 0));
+  e.preventDefault();
+}
+document.addEventListener("mousemove", e => {
+  if (!tlDrag) return;
+  const d = tlDrag, seg = d.seg;
+  const dx = e.clientX - d.x0;
+  if (Math.abs(dx) > 4) d.moved = true;
+  if (d.mode === "body") {
+    if (!d.moved) return;
+    // 拖动排序：指针位置对应目标插入点
+    const tlBox = $("edit-timeline");
+    const x = e.clientX - tlBox.getBoundingClientRect().left + tlBox.scrollLeft;
+    const t = Math.max(0, x / tlPPS);
+    let acc = 0, target = tlSegs.length - 1;
+    for (let i = 0; i < tlSegs.length; i++) {
+      if (t < acc + tlSegs[i].dur / 2) { target = i; break; }
+      acc += tlSegs[i].dur;
+    }
+    const from = tlSegs.indexOf(seg);
+    if (target > from) target--;
+    if (target !== from) {
+      if (!d.undoDone) { tlPushUndo(); d.undoDone = true; }
+      tlSegs.splice(from, 1);
+      tlSegs.splice(target, 0, seg);
+      tlT = tlClipPos(seg.id);
+      renderTimeline(); updatePlayhead();
+    }
+  } else {
+    // 拖边裁剪：0.1s 步进；左边缘 ≥0，右边缘 ≤ 源素材时长；最短 0.2s
+    const dt = Math.round(dx / tlPPS * 10) / 10;
+    if (d.mode === "left") {
+      seg.start = Math.max(0, Math.min(seg.end - 0.2, d.start0 + dt));
+      seg.dur = seg.end - seg.start;
+    } else {
+      const maxEnd = tlFileDur[seg.file] || (d.end0 + 3600);
+      seg.end = Math.min(maxEnd, Math.max(seg.start + 0.2, d.end0 + dt));
+      seg.dur = seg.end - seg.start;
+    }
+    renderTimeline();
+    editSeekT(d.mode === "left" ? tlClipPos(seg.id) : tlClipPos(seg.id) + seg.dur);
+  }
+});
+document.addEventListener("mouseup", () => {
+  if (!tlDrag) return;
+  const d = tlDrag;
+  tlDrag = null;
+  if (d.mode === "body" && !d.moved) {
+    editSeekT(d.acc0 + 0.1);   // 单击 = 选中并把播放头放到片段开头
+  } else if (d.mode === "body") {
+    toast("已调整片段顺序");
+  } else {
+    toast("片段已裁剪为 " + fmtSec(d.seg.start) + " - " + fmtSec(d.seg.end) + "（" + d.seg.dur.toFixed(1) + "s）");
+  }
+  renderTimeline();
+});
 function tlZoom(dir) {
   tlPPS = Math.max(4, Math.min(60, tlPPS * (dir > 0 ? 1.5 : 1 / 1.5)));
   renderTimeline();
@@ -959,6 +1088,39 @@ async function editClip() {
   } catch (e) { box.innerHTML = '<div class="msg err">❌ ' + esc(e.message) + '</div>'; }
   btn.disabled = false;
 }
+
+// ---------- 导出：剪映草稿（拿去剪映精修）/ SRT 台词字幕 ----------
+function _selList(segs) { return (segs || []).map(x => ({ file: x.file, start: x.start, end: x.end })).filter(s => s.end - s.start > 0.05); }
+async function exportJY(selections, name, boxId) {
+  const list = _selList(selections);
+  if (!list.length) { toast("没有可导出的片段"); return; }
+  const box = $(boxId);
+  box.innerHTML = '<div class="msg tool"><span class="loading"></span>生成剪映草稿中...</div>';
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  try {
+    const r = await fetch("/api/export_jianying", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, selections: list }) });
+    const d = await r.json();
+    if (d.error) { box.innerHTML = '<div class="msg err">❌ ' + esc(d.error) + '</div>'; return; }
+    box.innerHTML = `<div class="msg ok">✅ 剪映草稿「${esc(d.draft_name)}」已生成（${d.segments} 段 · ${fmtSec(d.duration_sec)} · ${d.materials} 个素材）<a href="${d.zip_url}" download style="color:#86efac;margin-left:8px">⬇ 下载草稿包(zip)</a></div>` +
+      `<div class="msg tool" style="font-size:12px">${d.copied_to
+        ? "✅ 已自动复制进剪映草稿库：" + esc(d.copied_to) + " —— 打开剪映首页即可看到，素材路径都是本机绝对路径，可直接精修。"
+        : "⚠️ 未自动复制：" + esc(d.copy_error || "未找到剪映草稿目录") + "。手动方式：下载 zip 解压到剪映草稿目录（剪映首页 → 全局设置 → 草稿位置），刷新剪映即见。"}</div>`;
+  } catch (e) { box.innerHTML = '<div class="msg err">❌ ' + esc(e.message) + '</div>'; }
+}
+async function exportSRT(selections, name, boxId) {
+  const list = _selList(selections);
+  if (!list.length) { toast("没有可导出的片段"); return; }
+  const box = $(boxId);
+  box.innerHTML = '<div class="msg tool"><span class="loading"></span>生成 SRT 字幕中...</div>';
+  try {
+    const r = await fetch("/api/export_srt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, selections: list }) });
+    const d = await r.json();
+    if (d.error) { box.innerHTML = '<div class="msg err">❌ ' + esc(d.error) + '</div>'; return; }
+    box.innerHTML = `<div class="msg ok">✅ SRT 字幕已生成（${d.cues} 条台词 · 覆盖 ${fmtSec(d.duration_sec)}）<a href="${d.url}" download style="color:#86efac;margin-left:8px">⬇ 下载 SRT</a>${d.cues === 0 ? '<div class="muted" style="margin-top:4px">选段没有台词（无语音或未做 ASR），生成了空字幕</div>' : ''}</div>`;
+  } catch (e) { box.innerHTML = '<div class="msg err">❌ ' + esc(e.message) + '</div>'; }
+}
+function editExportJY() { exportJY(tlSegs, "时间线剪辑", "edit-result"); }
+function editExportSRT() { exportSRT(tlSegs, "时间线剪辑", "edit-result"); }
 
 // ---------- 剧本序列：边搜边攒，允许重复，按序列出片 ----------
 let scriptSeq = [];  // [{file, start, end}]
@@ -1019,6 +1181,48 @@ async function clipSeq() {
   btn.disabled = false;
 }
 
+// ---------- AI 自动剪辑：需求+时长 → 自动选段出片 ----------
+async function autoEdit() {
+  if (!selected.size) { toast("请先勾选素材"); return; }
+  unloadVLM();  // 自动剪辑用 CLIP/bge-m3/ffmpeg，不需要 3B
+  const btn = $("btn-auto-edit"); btn.disabled = true;
+  const box = $("auto-result");
+  box.innerHTML = '<div class="msg tool"><span class="loading"></span>AI 自动剪辑中：向量打分 → 自动选段 → 无损出片...</div>';
+  try {
+    const r = await fetch("/api/auto_edit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      files: [...selected],
+      query: $("auto-query").value.trim(),
+      target_sec: parseFloat($("auto-target").value) || 60,
+      order: $("auto-order").value,
+      execute: true
+    }) });
+    const d = await r.json();
+    if (d.error && !(d.selections || []).length) { box.innerHTML = '<div class="msg err">❌ ' + esc(d.error) + '</div>'; return; }
+    lastAutoSels = (d.selections || []).map(s => ({ file: s.file, start: s.start, end: s.end }));
+    let html = `<div class="msg tool" style="font-size:12px">已选 <b>${(d.selections || []).length}</b> 段 · 预计 ${fmtSec(d.estimated_sec)}（目标 ${fmtSec(d.target_sec)}）${d.query ? " · 需求「" + esc(d.query) + "」" : " · 均匀精选模式"}</div>`;
+    (d.selections || []).forEach((s, i) => {
+      html += `<div class="msg tool" style="font-size:12px">${i + 1}. [${s.start}-${s.end}s] ${s.score != null ? `<span style="color:#86efac">✓${Math.round(s.score * 100)}%</span> ` : ""}${esc((s.content || "").slice(0, 50))} <span class="muted">${esc(s.file.split("/").pop())}</span></div>`;
+    });
+    if (lastAutoSels.length) {
+      html += `<div style="margin:8px 0;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn sm" onclick="exportJY(lastAutoSels, 'AI自动剪辑', 'auto-result')">🪄 导出剪映草稿</button>
+        <button class="btn sm secondary" onclick="exportSRT(lastAutoSels, 'AI自动剪辑', 'auto-result')">💬 导出SRT字幕</button>
+        <button class="btn sm secondary" onclick="openEditFiles([...new Set(lastAutoSels.map(s => s.file))], [...new Set(lastAutoSels.map(s => s.file))].map(f => f.split('/').pop()))">🎬 进时间线手动调</button>
+      </div>`;
+    }
+    if (d.output) {
+      const url = "/output/" + d.output.split("/").slice(-2).join("/");
+      html += `<div class="msg ok">✅ 成片完成（${d.steps_ok} 步）<a href="${url}" download style="color:#86efac;margin-left:8px">⬇ 下载</a></div>`;
+      html += `<video src="${url}" controls style="width:100%;border-radius:8px;margin-top:8px;background:#000"></video>`;
+    } else if (d.error) {
+      html += '<div class="msg err">❌ 出片失败：' + esc(d.error) + '</div>';
+    }
+    box.innerHTML = html;
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (e) { box.innerHTML = '<div class="msg err">❌ ' + esc(e.message) + '</div>'; }
+  btn.disabled = false;
+}
+
 // ---------- 场记单：搜索/浏览 → 勾选 → 剪勾选的（时间戳来自文档） ----------
 const ledgerSel = new Map();
 function ledgerRow(sc, file, score) {
@@ -1049,6 +1253,8 @@ function toggleLedger(key, on) {
 function updateLedgerCount() {
   $("ledger-count").textContent = "已勾选 " + ledgerSel.size + " 段";
   $("btn-clip-ledger").disabled = ledgerSel.size < 1;
+  $("btn-jy-ledger").disabled = ledgerSel.size < 1;
+  $("btn-srt-ledger").disabled = ledgerSel.size < 1;
 }
 function ledgerAll() {
   if (!selected.size) { toast("请先勾选素材"); return; }
@@ -1292,11 +1498,20 @@ setInterval(refreshModelStatus, 5000);  // 页面常驻轮询：KEEP_ALIVE 2 分
     if (dragging) editSeekT(tlClickPos(e));
   });
   window.addEventListener("mouseup", () => { dragging = false; });
-  // 键盘：Delete 删除选中片段
+  // 快捷键（剪辑弹窗内）：空格播放 / S 分割 / Del 删除 / Ctrl+D 复制 / Ctrl+Z 撤销 / Ctrl+Y 恢复 / ←→ 移动播放头
   window.addEventListener("keydown", e => {
-    if ($("edit-modal").classList.contains("show") && (e.key === "Delete" || e.key === "Backspace")) {
-      editDelSelected();
-    }
+    if (!$("edit-modal").classList.contains("show")) return;
+    const tag = ((e.target && e.target.tagName) || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") return;
+    const k = (e.key || "").toLowerCase();
+    if (e.key === " " || e.code === "Space") { e.preventDefault(); editPlayPause(); }
+    else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); editDelSelected(); }
+    else if ((e.ctrlKey || e.metaKey) && k === "z" && !e.shiftKey) { e.preventDefault(); editUndoCut(); }
+    else if ((e.ctrlKey || e.metaKey) && (k === "y" || (k === "z" && e.shiftKey))) { e.preventDefault(); editRedo(); }
+    else if ((e.ctrlKey || e.metaKey) && k === "d") { e.preventDefault(); editDupSelected(); }
+    else if (k === "s" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); editCutNow(); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); editSeekT(tlT - (e.shiftKey ? 1 : 0.2)); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); editSeekT(tlT + (e.shiftKey ? 1 : 0.2)); }
   });
 })();
 </script>

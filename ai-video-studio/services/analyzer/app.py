@@ -20,11 +20,16 @@ MATERIALS = Path(os.environ.get("MATERIALS_DIR", "/materials"))
 ANALYSIS = Path(os.environ.get("ANALYSIS_DIR", "/analysis"))
 VLM_BASE_URL = os.environ.get("VLM_BASE_URL", "http://ollama:11434/v1").rstrip("/")
 VLM_MODEL = os.environ.get("VLM_MODEL", "qwen2.5vl:3b")
+# 视觉大模型开关：true=总是用 / false=禁用（用 CLIP 零样本标注兜底） / auto=先试，连续失败自动熔断转 CLIP
+# 本机跑不动 VLM 时在 .env 里设 VLM_ENABLED=false，分析照常出场景/标签/向量，只是没有 VLM 的自由文本描述
+VLM_ENABLED = os.environ.get("VLM_ENABLED", "auto").strip().lower()
 NUM_CTX = int(os.environ.get("NUM_CTX", "8192"))
 ASR_MODEL = os.environ.get("ASR_MODEL", "faster-whisper-small")
 WHISPER_MODEL_DIR = os.environ.get("WHISPER_MODEL_DIR", "")
 # 转写 CPU 线程上限：限制为 4（8G 电脑/笔记本安全值），防止吃满所有核导致过热
 ASR_CPU_THREADS = int(os.environ.get("ASR_CPU_THREADS", "4"))
+# 转写设备：auto=自动（GPU 库缺失时自动回退 CPU）/ cpu=强制 CPU（本机缺 cublas 等运行库时在 .env 设 cpu）
+ASR_DEVICE = os.environ.get("ASR_DEVICE", "auto").strip().lower()
 FACE_ENABLED = os.environ.get("FACE_ENABLED", "false").lower() == "true"
 MAX_FRAMES_PER_SCENE = int(os.environ.get("MAX_FRAMES_PER_SCENE", "2"))
 MAX_SCENES = int(os.environ.get("MAX_SCENES", "16"))
@@ -58,6 +63,7 @@ class AnalyzeRequest(BaseModel):
 
 class ScanRequest(BaseModel):
     folder: str = "."
+    force: bool = False  # True = 已分析也重跑（旧分析补台词/刷新 CLIP 标注）
 
 
 class QuerySegmentRequest(BaseModel):
@@ -74,12 +80,28 @@ class SearchRequest(BaseModel):
 
 # ---------- 工具函数 ----------
 
+# VLM 熔断器：连续失败 2 次即认为本机跑不动 VLM，剩余调用直接跳过（不再白等超时）
+_vlm_fail_streak = 0
+_VLM_FAIL_LIMIT = 2
+
+
+def _vlm_active() -> bool:
+    """VLM 是否应参与分析（结合开关与熔断状态）。"""
+    if VLM_ENABLED in ("false", "0", "no", "off"):
+        return False
+    return _vlm_fail_streak < _VLM_FAIL_LIMIT
+
+
 def _vlm_describe(images: list) -> dict | None:
     """调 Ollama（OpenAI 兼容接口）分析一组帧，返回语义 JSON。
 
     每帧单独编码进 messages（多图）；实测 3B 模型 1~2 帧多图识别人物最稳，
     3 帧多图/拼图会泛化成"角色A/皇帝大臣"式抽象标签，故保持 2 帧上限。
+    VLM 被禁用/熔断时立即返回 None（走 CLIP 零样本标注兜底）。
     """
+    if not _vlm_active() or not images:
+        return None
+    global _vlm_fail_streak
     parts = [{"type": "text", "text": SCENE_PROMPT}]
     for img in images:
         ok, buf = cv2.imencode(".jpg", img)
@@ -96,13 +118,94 @@ def _vlm_describe(images: list) -> dict | None:
         "max_tokens": 512,
     }
     try:
-        resp = httpx.post(f"{VLM_BASE_URL}/chat/completions", json=payload, timeout=180)
+        resp = httpx.post(f"{VLM_BASE_URL}/chat/completions", json=payload, timeout=120)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
+        _vlm_fail_streak = 0
         return util.parse_llm_json(content)
     except Exception as exc:
-        print(f"[vlm] 失败: {exc}")
+        _vlm_fail_streak += 1
+        if _vlm_fail_streak == _VLM_FAIL_LIMIT:
+            print(f"[vlm] 连续 {_vlm_fail_streak} 次失败，本次扫描剩余场景改用 CLIP 零样本标注（最后一次错误: {exc}）")
+        else:
+            print(f"[vlm] 失败: {exc}")
         return None
+
+
+# ---------- CLIP 零样本场景标注（VLM 不可用时的语义兜底） ----------
+# 原理：Chinese-CLIP 把"标签文本"和"关键帧画面"编码到同一向量空间，
+# 余弦相似度即"画面像不像这个标签"。完全本地、确定性、毫秒级，不需要任何大模型。
+_CLIP_LABELS = [
+    ("人物特写", "一个人面部的特写镜头"),
+    ("人物对话", "两个人物面对面说话交谈"),
+    ("打斗动作", "两个人激烈打斗搏斗的动作场面"),
+    ("武打兵器", "手持刀剑兵器的武打场面"),
+    ("奔跑追逐", "人物在奔跑追逐"),
+    ("跪拜礼仪", "古代礼仪跪拜祭祀典礼场面"),
+    ("悲伤情绪", "人物悲伤哭泣的情绪戏"),
+    ("户外风景", "户外大自然山水风景"),
+    ("室内场景", "室内房间宫殿里的场景"),
+    ("夜晚场景", "夜晚黑暗的夜景"),
+    ("人群场面", "很多人聚集的热闹场面"),
+    ("动物画面", "一只动物在画面里"),
+    ("水边海浪", "海边水边有波浪"),
+    ("宫殿建筑", "古代宫殿楼阁建筑"),
+    ("骑马出行", "骑马或坐马车的画面"),
+    ("吃饭喝酒", "吃饭喝酒宴席的画面"),
+]
+_clip_label_vecs: list = None  # 惰性缓存：每个标签的 CLIP 文本向量
+
+
+def _label_vecs() -> list:
+    """标签文本向量（一次性计算并缓存；CLIP 不可用时返回空表）。"""
+    global _clip_label_vecs
+    if _clip_label_vecs is not None:
+        return _clip_label_vecs
+    _clip_label_vecs = []
+    try:
+        vecs = clip_client.text_embed([t for _, t in _CLIP_LABELS])
+        if vecs and len(vecs) == len(_CLIP_LABELS):
+            _clip_label_vecs = [v for v in vecs]
+    except Exception as exc:
+        print(f"[clip] 标签向量编码失败: {exc}")
+    return _clip_label_vecs
+
+
+def _clip_label_scene(clip_vec: list) -> tuple[list[dict], str, str, float]:
+    """单场景零样本标注：返回 (labels, content, energy_hint, confidence)。
+
+    - labels: [{name,score}] 相似度达阈值的前 3 个
+    - content: 拼好的可读描述（"画面:打斗动作/人物特写 · 场景:户外风景"）
+    - energy_hint: 暂为空（能量由动量统计决定）
+    - confidence: 最高标签分（映射到 0~0.6，明确低于 VLM 描述的可信度）
+    """
+    lvecs = _label_vecs()
+    if not lvecs or not clip_vec:
+        return [], "", "", 0.0
+    import numpy as np
+
+    v = np.asarray(clip_vec, dtype=np.float32)
+    scored = []
+    for (name, _txt), lv in zip(_CLIP_LABELS, lvecs):
+        score = float(np.dot(v, np.asarray(lv, dtype=np.float32)))
+        scored.append((name, score))
+    scored.sort(key=lambda x: -x[1])
+    top = [{"name": n, "score": round(s, 3)} for n, s in scored[:3] if s >= 0.16]
+    if not top:
+        top = [{"name": scored[0][0], "score": round(scored[0][1], 3)}]
+    names = [t["name"] for t in top]
+    content = "画面:" + "/".join(names[:2]) + (" · 场景:" + names[2] if len(names) > 2 else "")
+    return top, content, "", min(0.6, round(top[0]["score"] * 1.5, 2))
+
+
+def _motion_energy(motion: float, cut_density: float) -> str:
+    """动量+切点密度 → 能量档位（无 VLM 时的确定性能量估计）。"""
+    m = motion + cut_density * 0.5
+    if m >= 0.12:
+        return "high"
+    if m >= 0.05:
+        return "medium"
+    return "low"
 
 
 _TYPE_OK = {"wide", "closeup", "interview", "aerial", "medium"}
@@ -144,17 +247,21 @@ def _norm_semantic(semantic: dict | None) -> dict:
     return out
 
 
-def _find_cuts(path: Path) -> tuple[float, list[tuple[float, float]]]:
-    """检测所有镜头切点：返回 (时长, [(切点秒, 差异分数)...])。"""
+def _find_cuts(path: Path) -> tuple[float, list[tuple[float, float]], list[tuple[float, float]]]:
+    """检测所有镜头切点：返回 (时长, [(切点秒, 差异分数)...], [(样本秒, 帧间差异)...])。
+
+    第三个返回值是逐样本差异时间线（画面变化剧烈程度），供无 VLM 时估计场景能量。
+    """
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
-        return 0.0, []
+        return 0.0, [], []
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total / fps if total else 0.0
     stride = max(1, int(fps * 0.5))
     prev_hist, prev_edge = None, None
     cuts: list[tuple[float, float]] = []
+    samples: list[tuple[float, float]] = []
     idx = 0
     while True:
         ok, frame = cap.read()
@@ -171,23 +278,25 @@ def _find_cuts(path: Path) -> tuple[float, list[tuple[float, float]]]:
             if prev_hist is not None:
                 hist_diff = float(cv2.compareHist(prev_hist, hist, cv2.HISTCMP_BHATTACHARYYA))
                 edge_diff = abs(edge - prev_edge)
+                diff = max(hist_diff, edge_diff * 3)
+                t = idx / fps
+                samples.append((t, diff))
                 # 阈值放宽：旧剧/低对比度视频转场柔和，0.35/0.12 会漏切成长镜头
                 if hist_diff > 0.25 or edge_diff > 0.08:
-                    t = idx / fps
                     if not cuts or t - cuts[-1][0] > 0.8:
-                        cuts.append((t, max(hist_diff, edge_diff * 3)))
+                        cuts.append((t, diff))
             prev_hist, prev_edge = hist, edge
         idx += 1
     cap.release()
-    return duration, cuts
+    return duration, cuts, samples
 
 
-def _detect_cuts(path: Path, min_sec: float = 1.5, max_sec: float = 15.0) -> list[dict]:
-    """细镜头切分：返回所有镜头边界（最小 1.5s，最长 15s），不合并——供场记精确时间戳。
+def _detect_cuts(path: Path, min_sec: float = 1.5, max_sec: float = 15.0) -> tuple[list[dict], list[tuple[float, float]], list[tuple[float, float]]]:
+    """细镜头切分：返回 (所有镜头边界（最小 1.5s，最长 15s，不合并——供场记精确时间戳）, 差异样本时间线, 切点列表)。
 
     2 分钟视频能得到几十个镜头级分段，而不是几个大段。
     """
-    duration, cuts = _find_cuts(path)
+    duration, cuts, samples = _find_cuts(path)
     if not duration:
         return [{"index": 0, "start": 0.0, "end": 0.0}]
     boundaries = [0.0] + [t for t, _ in cuts] + [duration]
@@ -216,13 +325,22 @@ def _detect_cuts(path: Path, min_sec: float = 1.5, max_sec: float = 15.0) -> lis
             final.append({"start": s, "end": e})
     for i, sc in enumerate(final):
         sc["index"] = i
-    return final
+    return final, samples, cuts
+
+
+def _motion_stats(samples: list[tuple[float, float]], cuts: list[tuple[float, float]], start: float, end: float) -> tuple[float, float]:
+    """某时间段的 (平均动量, 切点密度)——无 VLM 时估计场景能量的确定性信号。"""
+    seg_len = max(0.1, end - start)
+    mots = [d for t, d in samples if start < t <= end]
+    motion = sum(mots) / len(mots) if mots else 0.0
+    density = sum(1 for t, _ in cuts if start < t <= end) / seg_len
+    return motion, density
 
 
 def _detect_scenes(path: Path, max_scenes: int | None = None) -> list[dict]:
     """场景切分（合并版）：供 VLM 描述分组，数量受 max_scenes 控制。"""
     max_scenes = max_scenes or MAX_SCENES
-    duration, cuts = _find_cuts(path)
+    duration, cuts, _samples = _find_cuts(path)
     if not duration:
         return [{"index": 0, "start": 0.0, "end": 0.0}]
     cut_scores = {t: score for t, score in cuts}
@@ -323,37 +441,64 @@ def _extract_frames_range(path: Path, start: float, end: float, num_frames: int)
 
 
 _whisper = None
+_asr_cpu_only = False  # GPU 运行库缺失/显存不足被探测到后，本次进程固定走 CPU
+
+
+def _asr_model(path: str):
+    """加载 whisper 模型：按 ASR_DEVICE 配置，auto 失败自动回退 CPU。"""
+    from faster_whisper import WhisperModel
+    global _asr_cpu_only
+    if ASR_DEVICE in ("cpu",) or _asr_cpu_only:
+        _asr_cpu_only = True
+        # cpu_threads 限制转写占用的核数（默认 4），防止 CPU 满载过热
+        return WhisperModel(path, device="cpu", compute_type="int8", cpu_threads=ASR_CPU_THREADS)
+    try:
+        return WhisperModel(path, device="auto", compute_type="int8", cpu_threads=ASR_CPU_THREADS)
+    except Exception:
+        _asr_cpu_only = True
+        return WhisperModel(path, device="cpu", compute_type="int8", cpu_threads=ASR_CPU_THREADS)
 
 
 def _asr(path: Path) -> list[dict]:
     global _whisper
     try:
-        from faster_whisper import WhisperModel
+        import faster_whisper  # noqa: F401
     except Exception as exc:
         print(f"[asr] faster-whisper 未安装: {exc}")
         return []
     if _whisper is None:
+        local = Path(WHISPER_MODEL_DIR) if WHISPER_MODEL_DIR else None
+        if local and local.exists() and any(local.iterdir()):
+            model_path = str(local)
+        else:
+            model_path = ASR_MODEL
         try:
-            local = Path(WHISPER_MODEL_DIR) if WHISPER_MODEL_DIR else None
-            if local and local.exists() and any(local.iterdir()):
-                model_path = str(local)
-            else:
-                model_path = ASR_MODEL
-            # cpu_threads 限制转写占用的核数（默认 4），防止 CPU 满载过热
-            _whisper = WhisperModel(model_path, device="auto", compute_type="int8", cpu_threads=ASR_CPU_THREADS)
+            _whisper = _asr_model(model_path)
         except Exception as exc:
             print(f"[asr] 模型加载失败（离线需预缓存）: {exc}")
             return []
-    try:
-        segments, _ = _whisper.transcribe(str(path), vad_filter=True)
+
+    def _do_transcribe(model):
+        segments, _ = model.transcribe(str(path), vad_filter=True)
         return [
             {"start": round(s.start, 3), "end": round(s.end, 3), "text": s.text.strip(), "speaker": None}
             for s in segments
             if s.text and s.text.strip()
         ]
+
+    try:
+        return _do_transcribe(_whisper)
     except Exception as exc:
-        print(f"[asr] 转写失败: {exc}")
-        return []
+        # GPU 运行库缺失（如 cublas DLL）/显存不足可能在转写时才爆：重建为 CPU 模型重试一次
+        print(f"[asr] 转写失败（{exc}），回退 CPU 重试")
+        local = Path(WHISPER_MODEL_DIR) if WHISPER_MODEL_DIR else None
+        model_path = str(local) if local and local.exists() and any(local.iterdir()) else ASR_MODEL
+        try:
+            _whisper = _asr_model(model_path)
+            return _do_transcribe(_whisper)
+        except Exception as exc2:
+            print(f"[asr] CPU 转写也失败: {exc2}")
+            return []
 
 
 def _faces(path: Path, out_dir: Path) -> list[dict]:
@@ -370,6 +515,15 @@ def _analyze_image(src: Path, out_dir: Path, rel: str) -> dict:
     if w > FRAME_MAX_W:
         frame = cv2.resize(frame, (FRAME_MAX_W, int(h * FRAME_MAX_W / w)))
     semantic = _norm_semantic(_vlm_describe([frame]))
+    labels: list[dict] = []
+    if not semantic.get("content"):
+        # VLM 不可用：CLIP 零样本标注兜底（图片本身就有向量，直接对标签文本比相似度）
+        vecs = clip_client.image_embed([frame])
+        if vecs and vecs[0] is not None:
+            labels, content, _e, conf = _clip_label_scene([round(float(x), 6) for x in vecs[0]])
+            if content:
+                semantic = {"content": content, "subjects": [], "confidence": conf}
+                semantic["labels"] = labels
     out_dir.mkdir(parents=True, exist_ok=True)
     thumb = out_dir / "thumb.jpg"
     util.save_image(frame, str(thumb))
@@ -437,11 +591,12 @@ def analyze_one(file: str, force: bool = False) -> dict:
         # 2 分钟 → 6 组；3~10 分钟 → 6~16 动态；10 分钟+ → 16 封顶
         max_scenes = min(MAX_SCENES, max(6, int(dur / 30))) if dur else MAX_SCENES
         # 每场景 2 帧（多图调用）：实测 1~2 帧识别人物最稳，3 帧会让 3B 模型泛化
-        frames_per_scene = MAX_FRAMES_PER_SCENE
+        frames_per_scene = MAX_FRAMES_PER_SCENE if _vlm_active() else 0
         # 两段式：
         # ① 细镜头（_detect_cuts）：所有镜头边界（1.5~15s），场记时间戳精确到镜头
         # ② 描述组（_detect_scenes 合并版）：VLM 只描述合并组，控制调用次数
-        fine_scenes = _detect_cuts(src)
+        #    VLM 不可用时描述留空，由 CLIP 零样本标注兜底（不抽描述帧，省一遍解码）
+        fine_scenes, motion_samples, cut_list = _detect_cuts(src)
         desc_scenes = _detect_scenes(src, max_scenes=max_scenes)
         # 每个细镜头抽 1 张中帧缩略图（场记每行可见自己画面）+ CLIP 画面向量（供向量搜索/重复检测）
         fine_thumbs: list[str] = []
@@ -470,13 +625,15 @@ def analyze_one(file: str, force: bool = False) -> dict:
                     fine_vecs.append([round(float(x), 6) for x in v] if v is not None else [])
         except Exception as exc:
             print(f"[analyze] 细镜头缩略图/CLIP 失败: {exc}")
-        frames = _extract_frames(src, desc_scenes, frames_dir, frames_per_scene=frames_per_scene)
+        frames = _extract_frames(src, desc_scenes, frames_dir, frames_per_scene=frames_per_scene) if frames_per_scene else []
         keyframes = [{"scene_index": f["scene_index"], "t": f["t"], "path": f["path"]} for f in frames]
-        # 描述组 VLM
+        # 描述组 VLM（VLM 不可用时该循环退化为空占位，语义由 CLIP 标注按细镜头补齐）
         desc_results = []
         for scene in desc_scenes:
             imgs = [f["image"] for f in frames if f["scene_index"] == scene["index"]]
             semantic = _norm_semantic(_vlm_describe(imgs)) if imgs else {}
+            if not semantic.get("content"):
+                semantic = {}  # VLM 禁用/熔断/输出无效：留空走 CLIP 兜底
             desc_results.append(
                 {
                     "start": scene["start"], "end": scene["end"],
@@ -499,6 +656,7 @@ def analyze_one(file: str, force: bool = False) -> dict:
                 desc = min(desc_results, key=lambda d: abs((d["start"] + d["end"]) / 2 - mid))
             if desc is None:
                 desc = {}
+            motion, density = _motion_stats(motion_samples, cut_list, fs_start, fs_end)
             scene_results.append(
                 {
                     "start": round(fs_start, 1),
@@ -508,19 +666,31 @@ def analyze_one(file: str, force: bool = False) -> dict:
                     "type": desc.get("type", ""),
                     "camera": desc.get("camera", ""),
                     "lighting": desc.get("lighting", ""),
-                    "energy": desc.get("energy", ""),
+                    "energy": desc.get("energy") or _motion_energy(motion, density),
                     "editing_use": desc.get("editing_use", ""),
                     "confidence": desc.get("confidence", 0.0),
                     "keyframes": [fine_thumbs[fi]] if fi < len(fine_thumbs) else (desc.get("keyframes") or []),
                     "clip_vec": (fine_vecs[fi] if fi < len(fine_vecs) else []),  # 画面向量（CLIP 512d）
                 }
             )
+        # VLM 没给出描述的镜头：CLIP 零样本标注兜底（画面向量 ↔ 标签文本向量比相似度）
+        labels_used = False
+        for sr in scene_results:
+            if not sr.get("content"):
+                labels, content, _e, conf = _clip_label_scene(sr.get("clip_vec") or [])
+                if content:
+                    sr["content"] = content
+                    sr["labels"] = labels
+                    sr["confidence"] = conf
+                    labels_used = True
         speech = _asr(src)
         silent = media.silencedetect(src, min_duration=0.8) if info.get("has_audio") else []
         faces = _faces(src, frames_dir)
         summary = None
-        tags = sorted({t for s in scene_results for t in (s.get("subjects") or [])})[:10]
-        # 摘要优先用画面语义（VLM 场景描述），转写只作兜底，避免摘要变成台词
+        tag_pool = [t for s in scene_results for t in (s.get("subjects") or [])]
+        tag_pool += [l["name"] for s in scene_results for l in (s.get("labels") or [])]
+        tags = sorted(set(tag_pool))[:10]
+        # 摘要优先用画面语义（VLM 场景描述 / CLIP 标注），转写只作兜底，避免摘要变成台词
         if scene_results:
             summary = "；".join([s.get("content", "") for s in scene_results if s.get("content")][:4])[:160] or None
         elif speech:
@@ -542,7 +712,8 @@ def analyze_one(file: str, force: bool = False) -> dict:
             "silent_segments": silent,
             "audio_stats": None,
             "analysis_meta": {
-                "vlm": VLM_MODEL,
+                "vlm": VLM_MODEL if frames_per_scene else "",
+                "labeler": "chinese-clip-zeroshot" if labels_used else "",
                 "asr": ASR_MODEL,
                 "scene_detector": "hsv+edge",
                 "analyzed_at": util.now_iso(),
@@ -615,7 +786,13 @@ def _find_analysis(name: str) -> dict | None:
 
 @app.get("/health")
 def health():
-    return {"ok": True, "vlm": VLM_MODEL, "face_enabled": FACE_ENABLED}
+    return {
+        "ok": True,
+        "vlm": VLM_MODEL,
+        "vlm_enabled": VLM_ENABLED,
+        "vlm_active": _vlm_active(),
+        "face_enabled": FACE_ENABLED,
+    }
 
 
 @app.post("/analyze")
@@ -658,7 +835,7 @@ def scan(req: ScanRequest):
             for rel in list(state["files"]):
                 state["current"] = rel
                 try:
-                    a = analyze_one(rel)
+                    a = analyze_one(rel, req.force)
                     state["results"].append({"file": rel, "ok": True, "scenes": len(a.get("scenes") or [])})
                     state["ok"] += 1
                 except Exception as exc:

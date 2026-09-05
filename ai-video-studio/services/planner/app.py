@@ -11,14 +11,14 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 import sys  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import clip_client, media, util  # noqa: E402
+from common import clip_client, jianying_draft, media, util  # noqa: E402
 
 PLANNER_BASE_URL = os.environ.get("PLANNER_BASE_URL", "http://ollama:11434/v1").rstrip("/")
 PLANNER_MODEL = os.environ.get("PLANNER_MODEL", "qwen2.5vl:3b")
@@ -33,6 +33,8 @@ EXECUTOR_URL = os.environ.get("EXECUTOR_URL", "http://executor:8002").rstrip("/"
 ANALYSIS = Path(os.environ.get("ANALYSIS_DIR", "/analysis"))
 MATERIALS = Path(os.environ.get("MATERIALS_DIR", "/materials"))
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
+OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(MATERIALS.parent / "output")))
+EXPORTS_DIR = OUTPUT_DIR / "exports"  # 剪映草稿 / SRT 等导出产物
 
 app = FastAPI(title="AI Video Studio Planner")
 
@@ -95,6 +97,7 @@ class ChatRequest(BaseModel):
 
 class ScanRequest(BaseModel):
     folder: str = "."
+    force: bool = False  # True = 已分析也重跑（补台词/刷新标注）
 
 
 MEDIA_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".ts", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -598,6 +601,22 @@ def _normalize_model_edl(edl: dict, message: str, files: list[str]) -> dict | No
         valid.append(op)
     if not valid:
         return None
+    # concat 修正：模型常在 concat.files 里写重复的原始文件名（它不知道同素材多段
+    # 要用 file#n 派生 key），executor 会把第一段重复拼接。按本方案内 trim 的真实
+    # 顺序重写派生 key，保证拼接顺序=裁剪顺序、不重不漏。
+    if any(o.get("op") == "concat" for o in valid):
+        keys: list[str] = []
+        seen_keys: dict[str, int] = {}
+        for o in valid:
+            if o.get("op") == "trim":
+                f = o.get("file")
+                n = seen_keys.get(f, 0)
+                keys.append(f if n == 0 else f"{f}#{n}")
+                seen_keys[f] = n + 1
+        for o in valid:
+            if o.get("op") == "concat":
+                o["files"] = keys
+                break
     edl["plan"] = valid
     return _ensure_export(edl, message)
 
@@ -606,7 +625,10 @@ def _llm_chat(messages: list, tools=None, timeout: float = 180) -> dict:
     headers = {"Content-Type": "application/json"}
     if PLANNER_API_KEY:
         headers["Authorization"] = f"Bearer {PLANNER_API_KEY}"
-    payload = {"model": PLANNER_MODEL, "messages": messages, "temperature": 0.2, "num_ctx": 8192}
+    payload = {"model": PLANNER_MODEL, "messages": messages, "temperature": 0.2}
+    # num_ctx 是 Ollama 专属参数；走线上 OpenAI 兼容 API（DeepSeek 等）时不能带，部分服务会报错
+    if any(h in PLANNER_BASE_URL for h in ("127.0.0.1", "localhost", "11434")):
+        payload["num_ctx"] = 8192
     if tools:
         payload["tools"] = tools
     resp = httpx.post(f"{PLANNER_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=timeout)
@@ -718,7 +740,7 @@ def list_materials(folder: str = "."):
 def api_scan(req: ScanRequest):
     """代理 analyzer 的 /scan：启动异步分析，返回 scan_id（前端轮询进度）。"""
     try:
-        r = httpx.post(f"{ANALYZER_URL}/scan", json={"folder": req.folder}, timeout=30)
+        r = httpx.post(f"{ANALYZER_URL}/scan", json={"folder": req.folder, "force": req.force}, timeout=30)
         r.raise_for_status()
         return r.json()
     except Exception as exc:
@@ -1206,22 +1228,7 @@ def chat(req: ChatRequest):
     return {"reply": "请勾选至少一个素材再输入指令。", "edl": None, "preview": None, "session": session}
 
 
-@app.post("/api/execute")
-def api_execute(req: dict):
-    """代理 executor 执行 EDL 出片。"""
-    try:
-        r = httpx.post(f"{EXECUTOR_URL}/execute", json={"edl": req.get("edl", req)}, timeout=3600)
-        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"error": r.text}
-    except Exception as exc:
-        return {"error": str(exc)}
-
-
-# ---------- 片段匹配剪辑：边匹配边剪 → 片段列表 → 人工筛选 → 合并 ----------
-
-_SNIPPETS: dict[str, list[dict]] = {}
-_snip_lock = threading.Lock()
-
-# 过程日志：把"思考/处理过程"记录到内存，前端轮询展示
+# 过程日志：/chat 流水线把思考/处理过程记录到内存（配 /api/process_log 供 API 客户端轮询）
 _PROCESS_LOGS: dict[str, list[dict]] = {}
 _plog_lock = threading.Lock()
 
@@ -1239,233 +1246,9 @@ def api_process_log(session: str):
         return {"session": session, "logs": list(_PROCESS_LOGS.get(session, []))}
 
 
-def _llm_filter_batch(query: str, a_batch: dict) -> list[dict]:
-    """单批场景筛选：7B 分析需求 + 读该批场景，返回相关的场景（带内容，时间必须引用清单）。"""
-    scenes_txt = _scene_block(a_batch, detail=True)
-    prompt = _FILTER_PROMPT.format(query=query, scenes=scenes_txt)
-    try:
-        msg = _llm_chat(
-            [{"role": "system", "content": "你是视频素材检索助手，严格按格式输出 JSON。"}, {"role": "user", "content": prompt}],
-            timeout=480,
-        )
-        edl = util.parse_llm_json(msg.get("content") or "")
-        if edl and isinstance(edl.get("useful_scenes"), list):
-            kept = []
-            for s in edl["useful_scenes"]:
-                if not isinstance(s, dict):
-                    continue
-                try:
-                    start, end = round(float(s["start"]), 1), round(float(s["end"]), 1)
-                except (KeyError, TypeError, ValueError):
-                    continue
-                # 只能引用本批清单里真实存在的场景
-                for sc in a_batch["scenes"]:
-                    if abs(start - float(sc.get("start", 0))) < 0.1 and abs(end - float(sc.get("end", 0))) < 0.1:
-                        kept.append(
-                            {"start": start, "end": end, "content": sc.get("content", ""), "subjects": sc.get("subjects") or []}
-                        )
-                        break
-            return kept
-    except Exception as exc:
-        print(f"[filter] 批次筛选失败: {exc}")
-    return []
-
-
-def _match_and_clip(session: str, message: str, files: list[str]):
-    """后台任务：逐素材分批匹配需求，匹配上的场景立即剪成独立片段，写入片段库。"""
-    _plog(session, f"📥 收到需求：{message}（{len(files)} 个素材，逐素材逐批次匹配）")
-    for f in files:
-        a = _material_doc(f)
-        if not a:
-            _plog(session, f"⚠️ 素材 {f} 未找到分析文档")
-            continue
-        scenes = a.get("scenes") or []
-        _plog(session, f"📄 素材 {f}：{len(scenes)} 个场景，分批匹配中...")
-        for i in range(0, len(scenes), 8):
-            batch = scenes[i : i + 8]
-            a_batch = dict(a)
-            a_batch["scenes"] = batch
-            kept = _llm_filter_batch(message, a_batch)
-            if kept:
-                _plog(session, f"🔍 批次 {i // 8 + 1} 匹配到 {len(kept)} 个相关场景，正在剪片段...")
-            for sc in kept:
-                edl = {
-                    "schema_version": 1,
-                    "request_id": f"snip-{int(time.time())}",
-                    "user_request": message,
-                    "plan": [
-                        {"op": "trim", "file": f, "start": sc["start"], "end": sc["end"]},
-                        {"op": "export", "format": "mp4", "resolution": "720p", "crf": 23},
-                    ],
-                }
-                try:
-                    r = httpx.post(f"{EXECUTOR_URL}/execute", json={"edl": edl}, timeout=900)
-                    data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"error": r.text}
-                except Exception as exc:
-                    data = {"error": str(exc)}
-                item = {
-                    "file": f,
-                    "start": sc["start"],
-                    "end": sc["end"],
-                    "content": sc.get("content", ""),
-                    "subjects": sc.get("subjects") or [],
-                    "output": data.get("output"),
-                    "job": data.get("job"),
-                    "status": "kept" if data.get("output") else "failed",
-                    "error": data.get("error"),
-                }
-                with _snip_lock:
-                    _SNIPPETS[session].append(item)
-                if data.get("output"):
-                    _plog(session, f"✂️ 已剪片段 [{sc['start']}-{sc['end']}s]：{sc.get('content', '')[:30]}")
-                else:
-                    _plog(session, f"❌ 剪片段失败 [{sc['start']}-{sc['end']}s]：{data.get('error', '')[:40]}")
-    _plog(session, "🏁 全部素材匹配完成，请查看片段列表，叉掉不要的再合并")
-
-
-class MatchRequest(BaseModel):
-    message: str
-    files: list[str] = []
-
-
-@app.post("/api/clip_match")
-def api_clip_match(req: MatchRequest):
-    """开始匹配剪辑：后台逐素材分批匹配，匹配上的立即剪成片段（异步，前端轮询片段列表）。"""
-    if not req.files:
-        return {"error": "请先勾选至少一个素材"}
-    session = f"snip-{int(time.time())}"
-    with _snip_lock:
-        _SNIPPETS[session] = []
-    threading.Thread(target=_match_and_clip, args=(session, req.message, req.files or []), daemon=True).start()
-    return {"session": session, "started": True, "total_files": len(req.files or [])}
-
-
-@app.get("/api/snippets")
-def api_snippets(session: str):
-    """查询片段列表（匹配中/已剪好/被删除）。"""
-    with _snip_lock:
-        return {"session": session, "snippets": list(_SNIPPETS.get(session, []))}
-
-
-@app.post("/api/snippet_delete")
-def api_snippet_delete(req: dict):
-    """叉掉不需要的片段（status → deleted，合并时跳过）。"""
-    session = req.get("session")
-    idx = int(req.get("index", -1))
-    with _snip_lock:
-        snips = _SNIPPETS.get(session)
-        if not snips or not (0 <= idx < len(snips)):
-            return {"error": "片段不存在"}
-        snips[idx]["status"] = "deleted"
-    return {"ok": True}
-
-
-@app.post("/api/merge_snippets")
-def api_merge_snippets(req: dict):
-    """把所有保留片段按顺序合并成一个成片。"""
-    session = req.get("session")
-    with _snip_lock:
-        snips = list(_SNIPPETS.get(session, []))
-    kept = [s for s in snips if s.get("status") == "kept" and s.get("output")]
-    if len(kept) < 2:
-        return {"error": f"保留的片段不足（当前 {len(kept)} 个），至少 2 个才能合并"}
-    try:
-        r = httpx.post(f"{EXECUTOR_URL}/merge_files", json={"files": [s["output"] for s in kept]}, timeout=1800)
-        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"error": r.text}
-    except Exception as exc:
-        return {"error": str(exc)}
-
-
-# ---------- 剧本批量剪辑：剧本（线上 DeepSeek 生成）→ 逐条匹配剪片段 → 合并 ----------
-
-class ScriptRequest(BaseModel):
-    script: dict  # {"title":..., "shots":[{"id","prompt","dialogue","narration","duration",...}]}
-    files: list[str] = []
-
-
 class GenScriptRequest(BaseModel):
     instruction: str = "根据这些素材的文档内容，魔改一版分镜剧本"
     files: list[str] = []
-
-
-def _script_clip_run(session: str, script: dict, files: list[str]):
-    """后台：按剧本逐条镜头匹配素材场景，匹配上立即剪成片段（允许重复使用素材片段）。"""
-    shots = (script or {}).get("shots") or []
-    _plog(session, f"📜 开始按剧本剪辑：{len(shots)} 个镜头，{len(files)} 个素材")
-    for shot in shots:
-        sid = shot.get("id")
-        prompt = str(shot.get("prompt") or "").strip()
-        if not prompt:
-            continue
-        _plog(session, f"🎬 镜头{sid}：{prompt[:40]}...")
-        # 该镜头需求 → 逐素材匹配相关场景（分批筛选，天然不超上下文）
-        kept: dict[str, list[dict]] = {}
-        for f in files:
-            a = _material_doc(f)
-            if not a:
-                continue
-            scenes = _llm_filter_scenes(prompt, a)
-            if scenes:
-                kept[f] = scenes
-        if not kept:
-            _plog(session, f"⚠️ 镜头{sid} 在素材库中无匹配场景")
-            with _snip_lock:
-                _SNIPPETS[session].append(
-                    {"shot": sid, "prompt": prompt[:60], "status": "nomatch", "error": "素材库无匹配场景"}
-                )
-            continue
-        _plog(session, f"🔍 镜头{sid} 匹配到 {sum(len(v) for v in kept.values())} 个场景，剪片段中...")
-        # 剪片段：每个匹配场景独立剪（同素材多段/跨素材都允许）
-        for f, scenes in kept.items():
-            for sc in scenes:
-                edl = {
-                    "schema_version": 1,
-                    "request_id": f"script-{int(time.time())}",
-                    "user_request": prompt,
-                    "plan": [
-                        {"op": "trim", "file": f, "start": sc["start"], "end": sc["end"]},
-                        {"op": "export", "format": "mp4", "resolution": "720p", "crf": 23},
-                    ],
-                }
-                try:
-                    r = httpx.post(f"{EXECUTOR_URL}/execute", json={"edl": edl}, timeout=900)
-                    data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"error": r.text}
-                except Exception as exc:
-                    data = {"error": str(exc)}
-                with _snip_lock:
-                    _SNIPPETS[session].append(
-                        {
-                            "shot": sid,
-                            "prompt": prompt[:60],
-                            "file": f,
-                            "start": sc["start"],
-                            "end": sc["end"],
-                            "content": sc.get("content", ""),
-                            "output": data.get("output"),
-                            "status": "kept" if data.get("output") else "failed",
-                            "error": data.get("error"),
-                        }
-                    )
-                if data.get("output"):
-                    _plog(session, f"✂️ 镜头{sid} 已剪片段 [{sc['start']}-{sc['end']}s]")
-                else:
-                    _plog(session, f"❌ 镜头{sid} 剪片段失败：{str(data.get('error', ''))[:40]}")
-    _plog(session, "🏁 剧本剪辑完成，请查看片段列表，叉掉不要的再合并")
-
-
-@app.post("/api/script_clip")
-def api_script_clip(req: ScriptRequest):
-    """按剧本批量剪辑：逐条镜头匹配素材 → 剪片段（异步），前端轮询片段列表后合并。"""
-    shots = (req.script or {}).get("shots") or []
-    if not shots:
-        return {"error": "剧本没有镜头（shots）"}
-    if not req.files:
-        return {"error": "请先勾选素材"}
-    session = f"script-{int(time.time())}"
-    with _snip_lock:
-        _SNIPPETS[session] = []
-    threading.Thread(target=_script_clip_run, args=(session, req.script, req.files or []), daemon=True).start()
-    return {"session": session, "shots": len(shots), "started": True}
 
 
 @app.post("/api/generate_script")
@@ -1547,7 +1330,9 @@ def _script_docs(files: list[str]) -> list[str]:
 
 # ---------- 场记单 + 向量检索 + 勾选剪片（文档为主，检索辅助，人决策） ----------
 
-_OLLAMA_BASE = PLANNER_BASE_URL.replace("/v1", "").rstrip("/")
+# 本地 Ollama（bge-m3 向量化 / 模型加载状态 / 卸载）——与对话模型地址解耦：
+# PLANNER_BASE_URL 切到线上 DeepSeek 时，bge-m3 仍走本地 Ollama
+OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://127.0.0.1:11434").rstrip("/")
 
 
 def _embed(texts: list[str]) -> list[list[float]]:
@@ -1555,7 +1340,7 @@ def _embed(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
     try:
-        r = httpx.post(f"{_OLLAMA_BASE}/api/embed", json={"model": "bge-m3", "input": texts}, timeout=120)
+        r = httpx.post(f"{OLLAMA_BASE}/api/embed", json={"model": "bge-m3", "input": texts}, timeout=120)
         r.raise_for_status()
         return r.json().get("embeddings") or []
     except Exception as exc:
@@ -1580,7 +1365,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
 def api_model_status():
     """查询 Ollama 当前已加载的模型（用于页面显示'模型加载中'提示）。"""
     try:
-        r = httpx.get(f"{_OLLAMA_BASE}/api/ps", timeout=5)
+        r = httpx.get(f"{OLLAMA_BASE}/api/ps", timeout=5)
         r.raise_for_status()
         loaded = [m.get("name", "") for m in (r.json().get("models") or []) if m.get("name")]
         return {"ok": True, "loaded": loaded, "vlm_model": VLM_MODEL}
@@ -1594,7 +1379,7 @@ def api_model_unload(req: dict = None):
     model = (req or {}).get("model") or VLM_MODEL
     try:
         # keep_alive=0 + 空 prompt：Ollama 会立即把该模型从内存/显存卸载
-        r = httpx.post(f"{_OLLAMA_BASE}/api/generate", json={"model": model, "keep_alive": 0, "prompt": ""}, timeout=60)
+        r = httpx.post(f"{OLLAMA_BASE}/api/generate", json={"model": model, "keep_alive": 0, "prompt": ""}, timeout=60)
         r.raise_for_status()
         return {"ok": True, "unloaded": model}
     except Exception as exc:
@@ -1747,24 +1532,24 @@ def _match_shot_scenes(shots: list[dict], files: list[str], top_k: int = 5) -> l
                         continue
                     scored.append((sc, s_text, s_clip, f))
         # 加权融合排序：画面通道（剧本 prompt 描述的就是画面）权重更高
+        # （只读缓存条目，融合分放在元组里算，不往缓存写临时字段，避免污染后续请求）
+        ranked = []
         for sc, st, sc2, _f in scored:
-            sc["_file"] = _f
             if sc2 is not None and st is not None:
-                sc["_rrf"] = 0.6 * sc2 + 0.4 * st
+                rrf = 0.6 * sc2 + 0.4 * st
             elif sc2 is not None:
-                sc["_rrf"] = sc2
+                rrf = sc2
             else:
-                sc["_rrf"] = st if st is not None else 0.0
-        scored.sort(key=lambda x: -x[0].get("_rrf", 0.0))
+                rrf = st if st is not None else 0.0
+            ranked.append((sc, st, sc2, _f, rrf))
+        ranked.sort(key=lambda x: -x[4])
         cands = []
-        for sc, st, sc2, _f in scored[:top_k]:
+        for sc, st, sc2, _f, rrf in ranked[:top_k]:
             c = dict(sc)
             c.pop("vector", None)
             c.pop("clip_vec", None)
-            c.pop("_rrf", None)
-            c["file"] = sc.get("_file", "")
-            c.pop("_file", None)
-            c["score"] = round(c.get("_rrf", st if st is not None else 0.0), 4)
+            c["file"] = _f
+            c["score"] = round(rrf, 4)
             if sc2 is not None and st is not None:
                 c["score_text"], c["score_clip"] = round(st, 3), round(sc2, 3)
             cands.append(c)
@@ -1827,6 +1612,350 @@ class ScriptMatchRequest(BaseModel):
     files: list[str] = []
 
 
+# ---------- AI 自动剪辑：需求+目标时长 → 向量打分选段 → 自动出片（不依赖视觉大模型） ----------
+# 信号全部来自确定性/轻量模型：场景切点(OpenCV) + 画面向量(Chinese-CLIP) + 描述向量(bge-m3)
+# + 台词(ASR) + 动量能量(帧间差异)。时间戳全部来自场记（分析文档），剪出来必然对。
+
+class AutoEditRequest(BaseModel):
+    files: list[str] = []
+    query: str = ""            # 想要什么（如"孙悟空打斗"）；空 = 不按语义，均匀精选铺满目标时长
+    target_sec: float = 60.0   # 目标成片时长（秒）
+    order: str = "time"        # time=按素材+时间线顺序（叙事连贯）/ score=按相关度从高到低（集锦感）
+    execute: bool = True       # True=直接无损出片（秒级）；False=只返回方案不执行
+    max_segments: int = 40     # 最多选多少段，防止碎成几百段
+
+
+def _scene_pool(files: list[str]) -> list[dict]:
+    """选中素材的全部场记场景摊平成候选池（只读索引的浅拷贝，逐条带上 file）。"""
+    _ensure_ledger_index(files)
+    pool: list[dict] = []
+    with _index_lock:
+        for f, scenes in _LEDGER_INDEX.items():
+            if f not in files:
+                continue
+            for sc in scenes:
+                item = dict(sc)
+                item["file"] = f
+                pool.append(item)
+    return pool
+
+
+def _score_pool(query: str, pool: list[dict]) -> bool:
+    """原地给候选池打分。有 query：画面0.55/文字0.45 双通道融合；无 query：时长适配+台词占比启发式。"""
+    if query:
+        qemb = _embed([query])
+        if not qemb:
+            return False
+        qclip = clip_client.text_embed_single(query)
+        for sc in pool:
+            st = _cosine(sc.get("vector") or [], qemb[0])
+            s_clip = None
+            if qclip is not None and sc.get("clip_vec"):
+                s_clip = float(clip_client.cosine(sc["clip_vec"], qclip))
+            if s_clip is not None:
+                sc["score"] = 0.55 * s_clip + 0.45 * st
+                sc["score_text"], sc["score_clip"] = round(st, 3), round(s_clip, 3)
+            else:
+                sc["score"] = st
+        return True
+    for sc in pool:
+        dur = (sc.get("end") or 0) - (sc.get("start") or 0)
+        fit = 1.0 if 8 <= dur <= 40 else (0.5 if 4 <= dur <= 60 else 0.2)
+        speech_len = sum((x.get("end") or 0) - (x.get("start") or 0) for x in sc.get("speech") or [])
+        speech_ratio = min(1.0, speech_len / dur) if dur else 0.0
+        sc["score"] = 0.7 * fit + 0.3 * speech_ratio
+    return True
+
+
+def _auto_select(pool: list[dict], files: list[str], target_sec: float, order: str, max_segments: int) -> list[dict]:
+    """贪心选段：按分数从高到低拿，跳过重叠/明显超时长的，凑够目标时长后收手。"""
+    picked: list[dict] = []
+    total = 0.0
+    for sc in sorted(pool, key=lambda s: -(s.get("score") or 0)):
+        if len(picked) >= max(1, max_segments):
+            break
+        dur = (sc.get("end") or 0) - (sc.get("start") or 0)
+        if dur < 1.0:
+            continue
+        # 同素材时间重叠去重
+        if any(
+            p["file"] == sc["file"] and not (sc["end"] <= p["start"] + 0.05 or sc["start"] >= p["end"] - 0.05)
+            for p in picked
+        ):
+            continue
+        # 已有选段时，加上会明显超过目标（>1.3×）的就跳过，让更短的补位
+        if picked and total + dur > target_sec * 1.3:
+            continue
+        picked.append(sc)
+        total += dur
+        if total >= target_sec * 0.9:
+            break
+    if not picked:
+        return []
+    if order == "score":
+        picked.sort(key=lambda s: -(s.get("score") or 0))
+    else:
+        pos = {f: i for i, f in enumerate(files)}
+        picked.sort(key=lambda s: (pos.get(s["file"], 1 << 30), s.get("start") or 0))
+    return picked
+
+
+def _edl_from_pairs(pairs: list[tuple[str, float, float]], request_text: str) -> dict:
+    """(file,start,end) 序列 → EDL。concat key 严格按序列顺序生成，保证出片顺序=勾选顺序。"""
+    plan: list[dict] = []
+    keys: list[str] = []
+    seen: dict[str, int] = {}
+    for f, s, e in pairs:
+        n = seen.get(f, 0)
+        keys.append(f if n == 0 else f"{f}#{n}")
+        seen[f] = n + 1
+        plan.append({"op": "trim", "file": f, "start": round(s, 1), "end": round(e, 1)})
+    if len(keys) > 1:
+        plan.append({"op": "concat", "files": keys})
+    plan.append({"op": "export", "format": "mp4", "resolution": "原样", "crf": 23})
+    return {
+        "schema_version": 1,
+        "request_id": f"auto-{int(time.time())}",
+        "user_request": request_text,
+        "plan": plan,
+    }
+
+
+@app.post("/api/auto_edit")
+def api_auto_edit(req: AutoEditRequest):
+    """AI 自动剪辑：一句话需求 + 目标时长 → 全库场景打分 → 自动选段 → 无损出片。
+
+    一次调用完成"理解需求 → 找素材 → 定区间 → 剪辑"全链路，不需要视觉大模型参与。
+    """
+    if not req.files:
+        return {"error": "请先勾选素材"}
+    pool = _scene_pool(req.files)
+    if not pool:
+        return {"error": "素材没有场景数据，请先在目录页完成分析"}
+    if not _score_pool(req.query.strip(), pool):
+        return {"error": "向量化失败（bge-m3 未就绪，请确认 Ollama 在运行）"}
+    target = max(5.0, min(3600.0, float(req.target_sec or 60)))
+    picked = _auto_select(pool, req.files, target, req.order, req.max_segments)
+    if not picked:
+        return {"error": "没有可用的场景片段"}
+    selections = [
+        {
+            "file": p["file"],
+            "start": p["start"],
+            "end": p["end"],
+            "score": round(p.get("score") or 0, 3),
+            "content": p.get("content", ""),
+            "speech": p.get("speech") or [],
+        }
+        for p in picked
+    ]
+    est = sum((p.get("end") or 0) - (p.get("start") or 0) for p in picked)
+    edl = _edl_from_pairs([(p["file"], p["start"], p["end"]) for p in picked], req.query.strip() or "AI 自动剪辑")
+    resp = {
+        "query": req.query.strip(),
+        "target_sec": target,
+        "estimated_sec": round(est, 1),
+        "selections": selections,
+        "edl": edl,
+        "output": None,
+    }
+    if not req.execute:
+        try:
+            r = httpx.post(f"{EXECUTOR_URL}/preview", json={"edl": edl}, timeout=60)
+            resp["preview"] = r.json() if r.status_code == 200 else {"error": r.text}
+        except Exception as exc:
+            resp["preview"] = {"error": str(exc)}
+        return resp
+    # 无损路径（trim copy + concat copy + 原样导出）通常秒级，直接出片
+    try:
+        r = httpx.post(f"{EXECUTOR_URL}/execute", json={"edl": edl}, timeout=3600)
+        data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"error": r.text}
+    except Exception as exc:
+        data = {"error": str(exc)}
+    resp["output"] = data.get("output")
+    resp["job"] = data.get("job")
+    resp["steps_ok"] = data.get("steps_ok")
+    if data.get("error"):
+        resp["error"] = data["error"]
+    return resp
+
+
+# ---------- 剪映草稿 / SRT 导出：把选区交给专业剪辑软件精修 ----------
+class ExportSel(BaseModel):
+    file: str
+    start: float
+    end: float
+
+
+class ExportJianyingRequest(BaseModel):
+    name: str = "AI粗剪"
+    selections: list[ExportSel]
+    copy_to_jianying: bool = True
+
+
+class ExportSrtRequest(BaseModel):
+    name: str = "AI粗剪"
+    selections: list[ExportSel]
+
+
+def _safe_filename(name: str) -> str:
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", (name or "").strip()).strip("_") or "AI粗剪"
+
+
+def _jianying_draft_dir() -> Path | None:
+    """探测剪映草稿库目录（JIANYING_DRAFT_DIR 环境变量优先），找不到返回 None。"""
+    env = os.environ.get("JIANYING_DRAFT_DIR")
+    cands = [Path(env)] if env else []
+    la = os.environ.get("LOCALAPPDATA")
+    if la:
+        base = Path(la) / "JianyingPro" / "User Data" / "Projects"
+        cands += [base / "com.lveditor.draft", base / "com.lveditor.draft.videoeditor"]
+    for c in cands:
+        try:
+            if c.is_dir():
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def _export_materials_info(files: list[str]) -> dict:
+    """导出用的素材信息：绝对路径 + 时长/分辨率/音轨（剪映 material 条目要这些）。"""
+    out: dict[str, dict] = {}
+    for f in dict.fromkeys(files):  # 去重保序
+        src = (MATERIALS / f).resolve()
+        if not src.exists() or not src.is_relative_to(MATERIALS.resolve()):
+            raise HTTPException(404, f"素材不存在: {f}")
+        info = media.probe(src)
+        res = str(info.get("resolution") or "")
+        w, h = (int(x) for x in res.split("x")) if "x" in res else (0, 0)
+        out[f] = {
+            "path": str(src),
+            "duration_sec": float(info.get("duration_sec") or 0),
+            "width": w,
+            "height": h,
+            "has_audio": bool(info.get("has_audio")),
+        }
+    return out
+
+
+def _export_sels(sels: list[ExportSel]) -> tuple[list[dict], dict]:
+    """选区清洗：去掉过短段，末端截到素材时长内。"""
+    infos = _export_materials_info([s.file for s in sels])
+    out = []
+    for s in sels:
+        dur_src = infos[s.file]["duration_sec"]
+        start = max(0.0, float(s.start))
+        end = min(float(s.end), dur_src) if dur_src else float(s.end)
+        if end - start > 0.05:
+            out.append({"file": s.file, "start": round(start, 3), "end": round(end, 3)})
+    if not out:
+        raise HTTPException(400, "没有可导出的片段（选区过短或越界）")
+    return out, infos
+
+
+@app.post("/api/export_jianying")
+def api_export_jianying(req: ExportJianyingRequest):
+    """选区 → 剪映草稿（draft_content.json + draft_meta_info.json）。
+
+    - 写到 output/exports/<草稿名>/，同时打 zip 供下载
+    - 找到剪映草稿库（%LOCALAPPDATA%/JianyingPro/User Data/Projects/com.lveditor.draft）
+      则自动复制进去，剪映首页刷新即见
+    - 轨道为单视频轨顺序拼接，时间单位微秒；剪映打开时自动补全其余字段
+    """
+    try:
+        sels, infos = _export_sels(req.selections)
+    except HTTPException as exc:
+        return {"error": exc.detail}
+    draft_name = f"{_safe_filename(req.name)}_{time.strftime('%Y%m%d_%H%M%S')}"
+    first = infos[sels[0]["file"]]
+    canvas = (first["width"], first["height"]) if first["width"] and first["height"] else (1920, 1080)
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    folder = jianying_draft.write_draft(EXPORTS_DIR / draft_name, sels, name=draft_name,
+                                        materials_info=infos, canvas=canvas)
+    zip_path = EXPORTS_DIR / f"{draft_name}.zip"
+    shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=str(EXPORTS_DIR), base_dir=draft_name)
+    copied_to, copy_error = None, None
+    if req.copy_to_jianying:
+        jd = _jianying_draft_dir()
+        if jd:
+            dest = jd / draft_name
+            try:
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(folder, dest)
+                copied_to = str(dest)
+            except Exception as exc:
+                copy_error = str(exc)
+        else:
+            copy_error = "未找到剪映草稿库（可下载 zip 手动解压到剪映草稿目录）"
+    return {
+        "draft_name": draft_name,
+        "folder": str(folder),
+        "zip_url": f"/exports/{draft_name}.zip",
+        "copied_to": copied_to,
+        "copy_error": copy_error,
+        "segments": len(sels),
+        "duration_sec": round(sum(s["end"] - s["start"] for s in sels), 1),
+        "materials": len(infos),
+    }
+
+
+def _fmt_srt_ts(sec: float) -> str:
+    ms = int(round(max(0.0, sec) * 1000))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+@app.post("/api/export_srt")
+def api_export_srt(req: ExportSrtRequest):
+    """选区 → SRT 字幕：把每个片段的转写台词平移到成片时间轴上。
+
+    台词来自分析文档（ASR）；无台词的片段自动跳过。
+    """
+    try:
+        sels, _infos = _export_sels(req.selections)
+    except HTTPException as exc:
+        return {"error": exc.detail}
+    cues = []
+    tl = 0.0
+    for s in sels:
+        a = _material_doc(s["file"]) or {}
+        for sp in a.get("speech") or []:
+            cs = max(s["start"], float(sp.get("start") or 0))
+            ce = min(s["end"], float(sp.get("end") or 0))
+            text = (sp.get("text") or "").strip()
+            if ce - cs > 0.05 and text:
+                cues.append({"start": tl + (cs - s["start"]), "end": tl + (ce - s["start"]), "text": text})
+        tl += s["end"] - s["start"]
+    lines = []
+    for i, c in enumerate(cues, 1):
+        lines += [str(i), f"{_fmt_srt_ts(c['start'])} --> {_fmt_srt_ts(c['end'])}", c["text"], ""]
+    srt = "\n".join(lines)
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    fname = f"{_safe_filename(req.name)}_{time.strftime('%Y%m%d_%H%M%S')}.srt"
+    (EXPORTS_DIR / fname).write_text(srt, encoding="utf-8-sig")  # 带签名，记事本/剪映都不乱码
+    return {
+        "url": f"/exports/{fname}",
+        "file": str(EXPORTS_DIR / fname),
+        "cues": len(cues),
+        "duration_sec": round(tl, 1),
+        "srt": srt,
+    }
+
+
+@app.get("/exports/{path:path}")
+def exports_file(path: str):
+    """导出产物下载（zip / srt）。"""
+    p = (EXPORTS_DIR / path).resolve()
+    if not p.is_relative_to(EXPORTS_DIR.resolve()) or not p.is_file():
+        return JSONResponse({"error": "文件不存在"}, status_code=404)
+    mt = "application/zip" if p.suffix.lower() == ".zip" else "application/octet-stream"
+    return FileResponse(p, media_type=mt, filename=p.name)
+
+
 @app.post("/api/script_match")
 def api_script_match(req: ScriptMatchRequest):
     """剧本 → 逐镜头向量检索全库场记 → 每个镜头返回候选场景（相似度排序）。
@@ -1867,17 +1996,18 @@ def api_clip_selected(req: ClipSelectedRequest):
         order.append((f, s, e))
     if not order:
         return {"error": "没有有效的勾选场景"}
-    # 同素材多段：executor 的 trim 用原始文件，registry 自动生成 file#n，concat 引用
-    per_file = {}
+    # 同素材多段：executor 的 trim 用原始文件，registry 自动生成 file#n，concat 引用。
+    # concat 顺序必须按勾选顺序逐条生成 key（先出现的用原名，同素材后续段用 file#n），
+    # 否则 A,B,A 交叉勾选会被拼成 A,A,B，破坏用户排序。
+    keys = []
+    seen: dict[str, int] = {}
     for f, s, e in order:
+        n = seen.get(f, 0)
+        keys.append(f if n == 0 else f"{f}#{n}")
+        seen[f] = n + 1
         plan.append({"op": "trim", "file": f, "start": round(s, 1), "end": round(e, 1)})
-        per_file[f] = per_file.get(f, 0) + 1
-    concat_files = []
-    for f, cnt in per_file.items():
-        for i in range(cnt):
-            concat_files.append(f if i == 0 else f"{f}#{i}")
-    if len(concat_files) > 1:
-        plan.append({"op": "concat", "files": concat_files})
+    if len(keys) > 1:
+        plan.append({"op": "concat", "files": keys})
     # 原样输出：不转码，保持素材画质（边听边剪/场记勾选都走无损）
     plan.append({"op": "export", "format": "mp4", "resolution": "原样", "crf": 23})
     edl = {
@@ -1915,6 +2045,15 @@ def api_waveform(req: WaveformRequest):
     dur = float(info.get("duration_sec") or 0)
     points = max(50, min(4000, int(req.points)))
     n = max(1, points)
+    # 磁盘缓存：同一文件、同样点数、未修改过 → 直接回缓存（时间线重复打开不重算）
+    wave_cache = src.parent / "_analysis" / (src.name + ".wave.json")
+    try:
+        cached = util.load_json(wave_cache) if wave_cache.exists() else None
+        if cached and cached.get("mtime") == src.stat().st_mtime and int(cached.get("points") or 0) == points and cached.get("peaks"):
+            return {"file": req.file, "duration_sec": dur, "points": points,
+                    "peaks": cached["peaks"], "has_audio": bool(cached.get("has_audio", True)), "cached": True}
+    except OSError:
+        pass
     # 提取单声道 8kHz 16bit PCM 到内存
     try:
         import subprocess
@@ -1951,6 +2090,12 @@ def api_waveform(req: WaveformRequest):
     arr = sorted(peaks)
     p95 = arr[min(len(arr) - 1, int(len(arr) * 0.95))] or 1e-6
     norm_peaks = [round(min(1.0, p / p95 * 0.9), 4) if p > 0.005 else 0.0 for p in peaks]
+    try:
+        wave_cache.parent.mkdir(parents=True, exist_ok=True)
+        util.save_json(wave_cache, {"mtime": src.stat().st_mtime, "points": points,
+                                    "has_audio": True, "peaks": norm_peaks})
+    except OSError:
+        pass
     return {"file": req.file, "duration_sec": dur, "points": n, "peaks": norm_peaks, "has_audio": True}
 
 

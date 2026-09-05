@@ -43,6 +43,10 @@ copy .env.example .env     # Windows
 
 ⚠️ `.env` 已被 .gitignore 屏蔽，**不要提交**（内含密钥）。
 
+> 原生模式（start_local.bat）**会自动加载 `.env`**：`.env` 里的配置覆盖脚本默认值，改完重启即生效。
+> 本机跑不动视觉大模型时设 `VLM_ENABLED=false`（分析改用 CLIP 场景标注兜底，检索/自动剪辑不受影响）；
+> 缺 CUDA 运行库（报 cublas64_12.dll）时设 `ASR_DEVICE=cpu`。
+
 ## 5. 启动 / 停止 / 验证
 
 | 动作 | 操作 |
@@ -51,7 +55,7 @@ copy .env.example .env     # Windows
 | 停止 | 双击 `ai-video-studio\stop_local.bat` |
 | 验证 | 打开 <http://localhost:8003>；analyzer <http://localhost:8001> |
 
-验证用例：分析一段视频 → 场记单出现场景/台词 → 勾选片段剪辑 → `ai-video-studio\output\` 出现成片。
+验证用例：分析一段视频 → 场记单出现场景/标签 → 勾选片段剪辑（或直接用「🤖 AI 自动剪辑」填需求+目标时长一键出片）→ `ai-video-studio\output\` 出现成片。
 
 ## 6. 端口一览
 
@@ -66,6 +70,8 @@ copy .env.example .env     # Windows
 
 - **启动后 8003 打不开**：看控制台日志；确认 Ollama 已起（11434 通）。
 - **分析报模型未找到**：确认 `models\ollama\models` 与 whisper/clip 权重在位。
-- **无 GPU 很慢**：属预期；调大 `ASR_CPU_THREADS` 或改用 GPU 机器。
+- **本机跑不动视觉大模型 / 分析卡住很慢**：`.env` 设 `VLM_ENABLED=false`，分析走 CLIP 场景标注兜底（秒级），检索与 AI 自动剪辑不受影响。
+- **日志报 cublas64_12.dll / 转写失败**：`.env` 设 `ASR_DEVICE=cpu`。
+- **无 GPU 很慢**：属预期；调大 `ASR_CPU_THREADS` 或改用 GPU 机器；对话规划建议走线上 DeepSeek。
 
 详细设计与修复记录见 `ai-video-studio\docs\implementation-plan.md`。

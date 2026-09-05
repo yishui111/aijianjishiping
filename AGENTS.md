@@ -41,3 +41,17 @@
 - .env 曾含真实 sk- DeepSeek Key → 绝不提交，只传 .env.example(占位 sk-xxxxxxxx)；PLANNER_API_KEY 等均为 os.environ 读取勿误报
 - 根 /部署方案.md 与 素材/ 仅本机保留（已 gitignore/exclude）；换机部署按 DEPLOY.md 方式A(整目录复制)或方式B(装配)
 - avs 内更细文档：ai-video-studio/README.md、docs/implementation-plan.md(含部署手册与修复史)
+
+### 关键点（2026-09-05 免 VLM 化改造补充）
+- 定位转向：VLM 是可选增强非必需——`VLM_ENABLED=false` 时分析用 Chinese-CLIP 零样本场景标注兜底（content 变标签式短语），检索/auto_edit 不受影响；本机 .env 已设 false + ASR_DEVICE=cpu（缺 cublas64_12.dll）
+- 新增 `POST /api/auto_edit`（AI 自动剪辑：需求+目标时长→bge-m3/CLIP 双通道打分→贪心选段→出片），前端「🤖 AI 自动剪辑」卡片
+- executor trim 已精准化：流切后回读校验 ±0.25s，漂移自动转帧级重编码——老剧 AV1/HEVC 源关键帧稀疏，纯 -c copy 会切点漂移、片段重复（踩过坑，勿回退）
+- planner 的 OLLAMA_BASE 与 PLANNER_BASE_URL 已解耦：对话走线上 DeepSeek 时 bge-m3/模型状态仍走本地 Ollama；_llm_chat 对线上 API 不发 num_ctx
+- start_local.ps1 会加载 .env（覆盖脚本默认值）；**含中文的 .ps1 必须带 UTF-8 BOM**，无 BOM 会被 PowerShell 5.1 按 GBK 误解成语法错误（此文件已带 BOM，勿删）
+- 实测数据与改动全表见 avs/docs/implementation-plan.md 第 15 节
+
+### 关键点（2026-09-05 剪映衔接补充）
+- services/common/jianying_draft.py 生成剪映明文草稿（draft_content.json/draft_meta_info.json，微秒时间轴，素材绝对路径，剪映打开自动补全字段）；planner `/api/export_jianying` 探测 `%LOCALAPPDATA%/JianyingPro/User Data/Projects/com.lveditor.draft`（或 JIANYING_DRAFT_DIR）自动复制草稿，找不到给 zip 下载（`/exports/{path}`，注意防穿越已测）；`/api/export_srt` 把选区内 ASR 台词平移到成片时间轴——**依赖分析文档 speech 字段，旧分析（ASR 修复前）在目录页点「🔁 重新分析（覆盖）」补台词**（/scan 已透传 force；/api/waveform 结果有磁盘缓存 `_analysis/*.wave.json`，mtime 失效自动重算）
+- planner 新增 OUTPUT_DIR 环境变量（start_local.ps1 planner 分支注入），导出产物在 output/exports/
+- 时间线升级（planner/static/index.html）：拖左右黄边裁剪（钳制在源时长内、最短 0.2s）/拖片段排序/redo 栈/复制片段/快捷键（空格/S/Del/Ctrl+D/Ctrl+Z/Ctrl+Y/←→）；导出剪映草稿+SRT 入口有三处：时间线面板、场记勾选栏、AI 自动剪辑结果
+- 实测数据与改动全表见 avs/docs/implementation-plan.md 第 16 节

@@ -553,3 +553,75 @@ P1b 待办：人脸嵌入与按人像检索（`FACE_ENABLED=true`）、CLIP 语�
 - **edl.json + audit.json**：每条剪切的来源、理由、信号依据（ASR 词命中 / 人脸向量 / CLIP 分数），可回溯；
 - **可选**：剪映草稿、SRT 字幕、竖屏 9:16 版本、多语言字幕；
 - **素材库侧**：人脸相册（上传小王照片 → 全库 12 段镜头合集一键出片）、语义搜索（"日落空镜"直接出片）、全部素材的检索式档案。
+
+## 15. 2026-09 架构调整：视觉大模型可选 + 免 VLM 的 AI 自动剪辑
+
+### 15.1 背景（为什么改）
+
+1. 本机（8G 档）跑不动 `qwen2.5vl:3b`：VLM 分析要么 OOM 要么 CPU 上慢到不可用；
+2. 旧实现里 VLM 调用失败后每个场景仍要白等 180s 超时，一个 72 场景的视频分析卡死数小时；
+3. 实测发现**流剪切（-c copy）在关键帧稀疏的源（老剧 AV1/HEVC 转码）上切点漂移 5~10 秒**，
+   相邻片段内容重复，成片时长膨胀近一倍——"剪出来必然对"的承诺在执行层就是假的；
+4. 结论：AI 剪辑的准确性不能押在 VLM 上，改为**确定性信号为主、VLM 为可选增强**。
+
+### 15.2 改动清单（全部已实测）
+
+| 层 | 改动 |
+|---|---|
+| analyzer | `VLM_ENABLED`（auto/false/true）+ 连续失败 2 次自动熔断；VLM 缺席时 **Chinese-CLIP 零样本场景标注**兜底（16 个中文标签 ↔ 关键帧向量比相似度，生成 content/labels/confidence）；能量由**帧间差异动量+切点密度**确定性估计；`ASR_DEVICE` 配置 + 转写层 CPU 回退（cublas DLL 缺失不再卡死） |
+| planner | 新增 **`POST /api/auto_edit`**：需求+目标时长 → 场景候选池 → bge-m3 文字 0.45 / CLIP 画面 0.55 双通道打分（无需求则时长适配+台词占比启发式）→ 贪心选段凑目标时长 → trim+concat+export 直接无损出片；`OLLAMA_BASE` 与对话模型地址解耦（切线上 DeepSeek 后 bge-m3/模型状态仍走本地 Ollama）；`_llm_chat` 不再向线上 API 发 Ollama 专属 `num_ctx` |
+| executor | **trim 精准化**：先流切 → 回读成品时长校验（±0.25s）→ 漂移则自动改帧级精准重编码（`-ss` 前置 + libx264）；超 180s 的长切接受关键帧级精度；`_same_spec` 增加 fps 比对 |
+| 规范化 | `_normalize_model_edl` 按 plan 内 trim 真实顺序重写 concat.files 的派生 key（模型常输出重复原名导致首段重复拼接）；`/api/clip_selected` 修同样的交叉勾选顺序 bug；`_match_shot_scenes` 不再污染场记索引缓存 |
+| 部署 | **start_local.ps1 加载 `.env`**（覆盖脚本默认值）——线上 DeepSeek/`VLM_ENABLED`/`ASR_DEVICE` 原生模式即配即用；注意：含中文的 .ps1 必须带 UTF-8 BOM，否则 PowerShell 5.1 按 GBK 误解直接语法错误 |
+
+### 15.3 实测结果（本机，2026-09-05）
+
+- AI 自动剪辑「猴子 猴王 / 目标 30s」：9.9s 出片，9 段共 29.9s（修复前同请求得 53s 重复内容）；
+- 免 VLM 分析 8s 测试片：15s 完成（场景/标签/能量/向量齐全），标签命中（海边戏→"水边海浪"）；
+- DeepSeek 对话剪辑：6.3s 出方案（本地 7B 需数分钟且常格式错）；场记双通道检索正常（text 0.62 / clip 0.39）。
+
+### 15.4 取舍
+
+- CLIP 零样本标签是**弱语义**（能分清"打斗/风景/特写"，认不出"孙悟空"）；VLM 可用的机器设
+  `VLM_ENABLED=true/auto` 即恢复自由文本描述，数据契约不变（labels 为新增可选字段）；
+- 免 VLM 模式下"按人物剪"依赖对话模型读场记，人物实体信息弱——后续可加人脸聚类补齐（P1b 原计划）；
+- trim 漂移回退会重编码部分片段，混合规格 concat 会触发整体归一化（多一次转码）——正确性优先。
+
+## 16. 2026-09 专业剪辑衔接：剪映草稿/SRT 导出 + 时间线剪辑升级
+
+### 16.1 背景
+
+AI 粗剪的定位是"选段"，精修交给专业工具。两条路：
+1. **导出剪映草稿**：选区直接变成剪映首页可见的草稿（素材为本机绝对路径），打开剪映即可继续精修；
+2. **导出 SRT**：选段内的 ASR 台词平移到成片时间轴，随粗剪一起交付（后期配音/字幕直接用）。
+
+同时把网页时间线从"只能分割/删除/撤销"升级到常规剪辑软件的操作面。
+
+### 16.2 改动清单（全部已实测）
+
+| 层 | 改动 |
+|---|---|
+| common | 新增 `jianying_draft.py`：选区列表 → `draft_content.json` + `draft_meta_info.json`（微秒时间轴；materials.videos 绝对路径；segments 的 target/source_timerange + speeds/canvases 引用；剪映打开时自动补全其余字段，兼容 6/7/10.x 明文草稿） |
+| planner | 新增 `POST /api/export_jianying`（选区 → 草稿文件夹 + zip；探测到剪映草稿库 `%LOCALAPPDATA%/JianyingPro/User Data/Projects/com.lveditor.draft` 或 `JIANYING_DRAFT_DIR` 环境变量时自动复制进去）、`POST /api/export_srt`（选区 → SRT，台词按选区裁剪并平移到时间轴，UTF-8 with BOM）、`GET /exports/{path}`（zip/srt 下载，防目录穿越）；`OUTPUT_DIR` 环境变量进 start_local.ps1 planner 分支 |
+| 时间线 | **拖左右黄边裁剪**（0.1s 步进，限制在源素材时长内、最短 0.2s）、**拖片段本体调顺序**、**恢复（redo）栈**、**复制选中片段**、快捷键（空格播放 / S 分割 / Del 删除 / Ctrl+D 复制 / Ctrl+Z 撤销 / Ctrl+Y 恢复 / ←→ 移动播放头）；`tlFileDur` 记录各素材总时长供裁剪钳制 |
+| 入口 | 时间线剪辑面板、场记单勾选栏、AI 自动剪辑结果三处都有「🪄 导出剪映草稿 / 💬 导出SRT」；AI 结果另加「进时间线手动调」 |
+
+### 16.3 实测（2026-09-05）
+
+- `/api/export_jianying` 两段选区（10-25s / 100-130s）：草稿 JSON 校验通过——target_timerange 顺序无缝（0s/15s）、source 对应 10s/100s、素材绝对路径存在、画布自动取素材分辨率 960x540、speed/canvas 引用齐全、meta 的 tm_duration 与 content 一致；zip 下载 200；
+- `/api/export_srt` 映射单测（注入 4 条台词）：跨选区起止的台词正确裁剪（99-105s → 15-20s；128-135s → 43-45s），无台词素材返回空 SRT 不报错；注意 **SRT 依赖分析文档里的 speech，ASR 修复前生成的旧分析需重新点「分析」补台词**；
+- 浏览器实测：拖右缘 -120px → 10-60s 变 10-50s；拖左缘 +60px → 15-50s；Ctrl+Z/Ctrl+Y/S/Del/Ctrl+D/空格 全部生效；手柄/按钮渲染正常；
+- 路径穿越（`/exports/../app.py`、URL 编码 `..%2F`）均 404。
+
+### 16.4 一致性清理（2026-09-05 第二轮）
+
+- 前后端对账：所有 onclick/JS 函数/fetch 路由三方核对，无坏按钮、无失效请求；planner 调 analyzer/executor 的端点全部存在；
+- 删除 6 个已被新工作流取代且 UI/内部/文档三处零引用的死端点：`/api/execute`（chat 工具直连 executor）、`/api/clip_match` + `/api/snippets` + `/api/snippet_delete` + `/api/merge_snippets`（被 场记勾选→clip_selected 取代的旧"片段库"流）、`/api/script_clip`（被 script_match/script_text_clip 取代），连带 `_match_and_clip`/`_llm_filter_batch`/`_script_clip_run` 等死助手；保留 `_plog`/`/api/process_log`（/chat 流水线配套）与 `_llm_filter_scenes`（chat 在用）；
+- 删除与 start_local.bat/stop_local.bat 完全重复的 one_click_start.bat / one_click_stop.bat（全仓零引用）；素材页标题「素材选择与 AI 对话」改为「素材选择」（对话 UI 早已不在该页）；
+- 启停脚本实测：stop→start→三服务 200 + Ollama 检测→重复 start 幂等跳过→stop 释放端口且保留 Ollama，全链路通过；.env 11 项正常加载（VLM_ENABLED=false 生效）。
+
+### 16.5 体验优化（2026-09-05 第三轮）
+
+- **重新分析入口**：`/scan` 全链路（analyzer `ScanRequest.force` → planner `/api/scan` → 前端「🔁 重新分析（覆盖）」按钮，带确认弹窗）。用途：给 ASR 修复前生成的旧分析补台词（SRT/检索依赖 speech）、VLM 配置变化后刷新标注。实测：force 重析 p01 后 speech 0→3 条；
+- **波形磁盘缓存**：`/api/waveform` 结果按 `mtime+points` 存 `_analysis/<素材名>.wave.json`，重复打开时间线不再重算 ffmpeg PCM 提取；
+- **启动脚本健康检查改轮询**：start_local.ps1 [3/3] 由"等 6 秒查一次"改为逐服务轮询最长 90 秒（analyzer 首次导入 torch/cv2 慢时不再误报"未就绪"）。
