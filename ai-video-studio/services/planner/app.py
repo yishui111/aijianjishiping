@@ -1932,13 +1932,17 @@ def api_match_lines(req: MatchLinesRequest):
     """
     if not req.lines:
         return {"error": "台词清单为空（先提取字幕）"}
-    listing = "\n".join(
-        f"{l.get('i')}: [{float(l.get('start', 0)):.1f}-{float(l.get('end', 0)):.1f}s] {l.get('text', '')}"
-        for l in req.lines)
+    def _fmt_line(l: dict) -> str:
+        sp = f"（说话人:{l.get('speaker')}）" if l.get("speaker") else ""
+        return f"{l.get('i')}: [{float(l.get('start', 0)):.1f}-{float(l.get('end', 0)):.1f}s]{sp} {l.get('text', '')}"
+
+    listing = "\n".join(_fmt_line(l) for l in req.lines)
     prompt = (
-        "你是字幕选段助手。下面是一段视频的全部台词（行号: [起-止秒] 台词）。\n"
+        "你是字幕选段助手。下面是一段视频的全部台词（行号: [起-止秒]（说话人） 台词）。\n"
         f"用户想要的内容：「{req.query}」\n\n"
         "请挑出与用户想要相关的所有台词行，宁可多选不要漏选，但明显无关的不要选。\n"
+        "如果用户指定了说话人（如\"把孙悟空说的话剪出来\"），只挑说话人标记与之一致的行（一句不漏，但别人说的绝不选）；"
+        "没有说话人标记时，结合对话上下文、称呼推断是谁说的，只挑他本人说的行。\n"
         "只输出 JSON：{\"pick\":[{\"i\":行号,\"reason\":\"不超过12字的理由\"}]}\n\n"
         "台词清单：\n" + listing
     )
@@ -1997,6 +2001,217 @@ def api_burn_srt(req: BurnSrtRequest):
     if proc.returncode != 0:
         return {"error": (proc.stderr or "烧录失败")[-400:]}
     return {"output": f"{parts[0]}/{dst.name}", "url": f"/output/{parts[0]}/{dst.name}"}
+
+
+# ---------- 说话人标注 / 按剧本匹配台词 / 台词 JSON 导出 ----------
+class AttrSpeakersRequest(BaseModel):
+    file: str
+    force: bool = False
+
+
+@app.post("/api/attribute_speakers")
+def api_attribute_speakers(req: AttrSpeakersRequest):
+    """给台词标注说话人：把全量台词交给对话模型，结合称呼/上下文推断每句是谁说的，写回分析文档。
+
+    说明：这是文本推断（谁在说话通常能从称呼和对话看出来）；要做到声纹级精准，
+    后续可接 FunASR CAM++ 说话人分离（同一接口，只换实现）。
+    """
+    src = (MATERIALS / req.file).resolve()
+    if not src.exists() or not src.is_relative_to(MATERIALS.resolve()):
+        return {"error": f"素材不存在: {req.file}"}
+    doc_path = src.parent / "_analysis" / (src.name + ".analysis.json")
+    doc = util.load_json(doc_path) if doc_path.exists() else None
+    speech = (doc or {}).get("speech") or []
+    if not speech:
+        return {"error": "该素材还没有台词（先提取字幕）"}
+    if all(sp.get("speaker") for sp in speech) and not req.force:
+        return {"speakers": [{"i": i, "speaker": sp.get("speaker")} for i, sp in enumerate(speech)], "cached": True}
+    listing = "\n".join(
+        f"{i}: [{float(sp.get('start') or 0):.1f}-{float(sp.get('end') or 0):.1f}s] {sp.get('text', '')}"
+        for i, sp in enumerate(speech))
+    prompt = (
+        "你是影视剧台词整理助手。下面按顺序给出一部视频的全部台词（行号: [起-止秒] 台词）。\n"
+        "请推断每一句是谁说的：结合台词内容、上下文称呼（如\"师父/悟空/陛下\"）、人名和常识。\n"
+        "知道名字就用名字；不知道名字就按角色称呼（如：女人/男人/师父/徒弟/皇帝/旁白），尽量不要写\"未知\"。只输出 JSON：\n"
+        '{"speakers":[{"i":行号,"speaker":"名字"}]}\n\n台词：\n' + listing
+    )
+    try:
+        msg = _llm_chat(
+            [{"role": "system", "content": "你是严谨的台词整理助手，严格按格式输出 JSON。"},
+             {"role": "user", "content": prompt}],
+            timeout=300,
+        )
+        data = util.parse_llm_json(msg.get("content") or "")
+        rows = data.get("speakers") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            return {"error": "模型没有返回说话人列表（再试一次）"}
+        changed = 0
+        for row in rows:
+            try:
+                i = int(row.get("i"))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= i < len(speech):
+                name = str(row.get("speaker") or "").strip()[:20]
+                if name:
+                    speech[i]["speaker"] = name
+                    changed += 1
+        if doc is not None:
+            doc["speech"] = speech
+            doc.setdefault("analysis_meta", {})["speakers_at"] = util.now_iso()
+            util.save_json(doc_path, doc)
+        return {"speakers": [{"i": i, "speaker": sp.get("speaker")} for i, sp in enumerate(speech)],
+                "changed": changed, "total": len(speech)}
+    except Exception as exc:
+        return {"error": f"说话人标注失败: {exc}"}
+
+
+class ScriptMatchLinesRequest(BaseModel):
+    queries: list[str]          # 剧本条目（每条一句话/一句对白）
+    lines: list[dict]           # 全量台词 [{i,start,end,text,speaker}]
+
+
+@app.post("/api/script_match_lines")
+def api_script_match_lines(req: ScriptMatchLinesRequest):
+    """按剧本找台词：剧本逐条 ↔ 台词清单，一次对话模型调用批量匹配，返回每条剧本命中的台词行。
+
+    命中的行由前端按剧本顺序勾选、按剧本顺序剪接——时间戳是确定性的，模型只做文本匹配。
+    """
+    if not req.queries:
+        return {"error": "剧本为空"}
+    if not req.lines:
+        return {"error": "台词清单为空（先提取字幕）"}
+    qlisting = "\n".join(f"[剧本{qi}] {q.strip()}" for qi, q in enumerate(req.queries) if q.strip())
+    llisting = "\n".join(
+        f"{l.get('i')}: [{float(l.get('start', 0)):.1f}-{float(l.get('end', 0)):.1f}s]"
+        + (f"（说话人:{l.get('speaker')}）" if l.get("speaker") else "")
+        + f" {l.get('text', '')}"
+        for l in req.lines)
+    prompt = (
+        "你是剪辑助手。给你一份剧本条目清单和一段视频的全部台词。\n"
+        "对每一条剧本条目，从台词里找出所有与之对应的台词行（内容相近、就是这件事/这句话，包括它的前后呼应）。\n"
+        "某条剧本在台词里找不到对应就给空数组。宁可多选不要漏选，但明显无关的不要选。\n"
+        '只输出 JSON：{"matches":[{"q":剧本条目号,"pick":[{"i":行号,"reason":"≤12字"}]}]}\n\n'
+        "剧本条目：\n" + qlisting + "\n\n台词清单：\n" + llisting
+    )
+    try:
+        msg = _llm_chat(
+            [{"role": "system", "content": "你是严谨的剪辑助手，严格按格式输出 JSON。"},
+             {"role": "user", "content": prompt}],
+            timeout=300,
+        )
+        data = util.parse_llm_json(msg.get("content") or "")
+        rows = data.get("matches") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            return {"error": "模型没有返回匹配结果（再试一次）"}
+        valid = {int(l.get("i")) for l in req.lines if str(l.get("i", "")).lstrip("-").isdigit()}
+        matches = []
+        for row in rows:
+            try:
+                q = int(row.get("q"))
+            except (TypeError, ValueError):
+                continue
+            if not (0 <= q < len(req.queries)):
+                continue
+            pick = []
+            for item in row.get("pick") or []:
+                try:
+                    i = int(item.get("i"))
+                except (TypeError, ValueError):
+                    continue
+                if i in valid:
+                    pick.append({"i": i, "reason": str(item.get("reason", ""))[:24]})
+            matches.append({"q": q, "query": req.queries[q], "pick": pick})
+        return {"matches": matches, "total_lines": len(req.lines)}
+    except Exception as exc:
+        return {"error": f"剧本匹配失败: {exc}"}
+
+
+class ExportSubtitlesRequest(BaseModel):
+    folder: str = "."
+
+
+def _folder_speech_videos(folder: str) -> tuple[list[dict], str | None]:
+    """收集目录（含子目录）下所有已提取字幕素材的台词。返回 (videos, 错误信息)。"""
+    base = (MATERIALS / folder).resolve() if folder and folder != "." else MATERIALS.resolve()
+    if not base.exists() or not base.is_relative_to(MATERIALS.resolve()):
+        return [], f"目录不存在: {folder}"
+    videos = []
+    for md in sorted(base.rglob("_analysis")):
+        if not md.is_dir():
+            continue
+        for jf in sorted(md.glob("*.analysis.json")):
+            doc = util.load_json(jf)
+            if not doc or not (doc.get("speech") or []):
+                continue
+            videos.append({
+                "file": doc.get("file") or jf.name.replace(".analysis.json", ""),
+                "duration_sec": doc.get("duration_sec"),
+                "lines": [{"start": sp.get("start"), "end": sp.get("end"),
+                           "text": sp.get("text"), "speaker": sp.get("speaker")}
+                          for sp in doc["speech"]],
+            })
+    return videos, None
+
+
+class FolderLinesRequest(BaseModel):
+    folder: str = "."
+
+
+@app.post("/api/folder_lines")
+def api_folder_lines(req: FolderLinesRequest):
+    """全目录台词池（跨视频剧本匹配用）：所有已提取字幕素材的对白，统一编号返回。"""
+    videos, err = _folder_speech_videos(req.folder)
+    if err:
+        return {"error": err}
+    lines = []
+    for v in videos:
+        for sp in v["lines"]:
+            lines.append({"i": len(lines), "file": v["file"], "start": sp["start"],
+                          "end": sp["end"], "text": sp["text"], "speaker": sp.get("speaker")})
+    return {"video_count": len(videos), "lines": lines}
+
+
+@app.post("/api/export_subtitles_json")
+def api_export_subtitles_json(req: ExportSubtitlesRequest):
+    """导出目录级台词 JSON：所有已提取字幕的视频的对白+时间点，合成一个文件（喂给剧本剪辑用）。"""
+    videos, err = _folder_speech_videos(req.folder)
+    if err:
+        return {"error": err}
+    if not videos:
+        return {"error": "该目录（含子目录）还没有任何台词——先提取字幕"}
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    fname = f"{_safe_filename(req.folder)}_台词_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    out = EXPORTS_DIR / fname
+    payload = {"schema_version": 1, "folder": req.folder, "generated_at": util.now_iso(),
+               "video_count": len(videos),
+               "line_count": sum(len(v["lines"]) for v in videos), "videos": videos}
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"url": f"/exports/{fname}", "file": str(out), "video_count": len(videos),
+            "line_count": payload["line_count"]}
+
+
+class KeywordLinesRequest(BaseModel):
+    keywords: list[str]   # 关键词（OR 语义：包含任意一个即命中）
+    lines: list[dict]     # 台词 [{i,start,end,text,speaker}]
+
+
+@app.post("/api/keyword_lines")
+def api_keyword_lines(req: KeywordLinesRequest):
+    """关键词剪辑：字幕里包含任意关键词的台词行全部命中（确定性子串匹配，不走模型）。"""
+    kws = [k.strip() for k in req.keywords if str(k).strip()]
+    if not kws:
+        return {"error": "关键词为空"}
+    if not req.lines:
+        return {"error": "台词清单为空（先提取字幕）"}
+    picked = []
+    for l in req.lines:
+        text = str(l.get("text") or "")
+        hit = next((k for k in kws if k in text), None)
+        if hit is not None:
+            picked.append({"i": int(l.get("i")), "start": l.get("start"), "end": l.get("end"),
+                           "text": text, "speaker": l.get("speaker"), "hit": hit})
+    return {"picked": picked, "total": len(req.lines), "keywords": kws}
 
 
 def _fmt_srt_ts(sec: float) -> str:

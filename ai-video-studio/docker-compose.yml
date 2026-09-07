@@ -18,7 +18,7 @@ services:
         limits:
           cpus: "4.0"
     ports:
-      - "11434:11434"
+      - "57800:11434"
     restart: unless-stopped
 
   analyzer:
@@ -49,7 +49,7 @@ services:
           cpus: "4.0"
           memory: 4g
     ports:
-      - "8001:8001"
+      - "57801:8001"
     restart: unless-stopped
 
   executor:
@@ -66,7 +66,7 @@ services:
       - ./output:/output
       - ./config:/config:ro
     ports:
-      - "8002:8002"
+      - "57802:8002"
     restart: unless-stopped
 
   planner:
@@ -90,5 +90,5 @@ services:
       - ../素材:/materials
       - ./config:/config:ro
     ports:
-      - "8003:8003"
+      - "57803:8003"
     restart: unless-stopped

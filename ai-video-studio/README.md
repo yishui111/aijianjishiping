@@ -67,8 +67,8 @@ cd ai-video-studio
 然后：
 
 1. 把素材放进 `materials/`；
-2. 理解素材：`curl -X POST http://localhost:8001/scan -H "Content-Type: application/json" -d '{"folder":"."}'`（或等空闲调度）；
-3. 剪辑：浏览器打开 `http://localhost:8003`。
+2. 理解素材：`curl -X POST http://localhost:57801/scan -H "Content-Type: application/json" -d '{"folder":"."}'`（或等空闲调度）；
+3. 剪辑：浏览器打开 `http://localhost:57803`。
    - **对话剪辑**：勾选素材 → 对话（如"保留 3-10 秒"）→ 预览 → 执行出片；
    - **手动精剪**：点素材卡片上的「👁 预览」→ 播放视频、用「⏺ 设为起点 / ⏹ 设为终点」或直接输入秒数（支持 `12` 或 `1:30`）→ 「▶ 试播区间」确认 → 「✂️ 剪辑此区间并出片」，成片直接内嵌预览并可下载。
 
@@ -89,7 +89,7 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 复制 `.env.example` 为 `.env`。两种模式：
 
 - **线上 DeepSeek**（规划更强）：填 `PLANNER_BASE_URL=https://api.deepseek.com/v1`、`PLANNER_MODEL=deepseek-chat`、`PLANNER_API_KEY`；
-- **全本地**（隐私最好）：`PLANNER_BASE_URL=http://localhost:11434/v1`、`PLANNER_MODEL=qwen2.5vl:3b`、API Key 留空。
+- **全本地**（隐私最好）：`PLANNER_BASE_URL=http://localhost:57800/v1`、`PLANNER_MODEL=qwen2.5vl:3b`、API Key 留空。
 
 ## 当前实现范围
 
@@ -99,7 +99,9 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 - ✅ **重新分析（覆盖）**：旧分析缺台词（SRT/检索要用）或想换标注方式时，目录页点「🔁 重新分析」强制重跑；波形提取结果带磁盘缓存，时间线反复打开不重算
 - ✅ 执行：trim（关键帧对齐无损优先，漂移自动转帧级精准重编码）/ remove_silence / concat / speed / export，concat 前自动归一化，dry-run 预览 + 审计
 - ✅ 方案：对话接口（规则引擎优先，模型兜底，支持线上 DeepSeek）+ 工具调用（query_segment 精读、search_semantic 语义检索、preview / execute）
-- ✅ 网页工作台（三个 Tab，对应后台服务）：**① 素材分析**（=分析服务 :8001：目录、分析/重新分析、进度；免分析批量剪也在这页）→ **② 剪辑出片**（=:8003+:8002：勾选素材 → AI 自动剪 / 手动精剪时间线 / 场记单勾选 → 成片 / 剪映草稿 / SRT）→ **③ 进阶剧本**（=:8003：文本剧本/线上生成/剧本序列）；时间线具备胶片条+波形、拖边裁剪/拖动排序/分割/复制/删除/撤销恢复/快捷键
+- ✅ 网页工作台（两个 Tab，对应后台服务）：**① 素材库·提取字幕**（=分析服务 :57801：整目录批量提取台词字幕；按时间规则批量剪也在这页）→ **② 字幕剪辑·手动精剪**（=:57803+:57802：提取台词→勾选句子或一句话智能勾选→剪出片段→下载成片/烧硬字幕/导出剪映草稿/SRT；时间线可拖边裁剪/排序/分割/快捷键）
+- ✅ **字幕驱动剪辑**：本地语音模型（faster-whisper）出带时间戳的台词，勾选哪几句就剪哪几段——台词时间戳是确定性数据，不靠 AI 猜画面；`models/whisper-medium` 存在自动用更精准的 medium 模型
+- ⏳ 画面语义功能已下线（AI 自动剪辑/场记单/剧本匹配的后端接口保留，前端无入口）：实测画面语义选段不可靠
 - ✅ **导出剪映草稿 / SRT**：AI 粗剪的选段一键变成剪映首页可见的草稿（素材绝对路径，打开剪映继续精修，也可下载 zip 手动放进剪映草稿库）；选段台词同步导出 SRT 字幕。入口：时间线剪辑、场记单勾选、AI 自动剪辑结果三处
 - ⏳ 人脸嵌入与按人像检索（P1b，默认关闭，`FACE_ENABLED=true` 后启用）
 - ⏳ 空闲时段自动调度（P1b，当前提供手动 /scan 与任务计划触发）

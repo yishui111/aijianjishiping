@@ -20,7 +20,7 @@
 
 1. 把含大件的完整原项目文件夹拷到新电脑任意位置（保持内部结构不变）
 2. 双击 `ai-video-studio\start_local.bat`
-3. 等待服务就绪，浏览器会自动打开 <http://localhost:8003>
+3. 等待服务就绪，浏览器会自动打开 <http://localhost:57803>
 
 ## 3. 方式 B：git clone + 装配
 
@@ -53,7 +53,7 @@ copy .env.example .env     # Windows
 | ---- | ---- |
 | 启动 | 双击 `ai-video-studio\start_local.bat`（自动拉起 Ollama + analyzer/executor/planner） |
 | 停止 | 双击 `ai-video-studio\stop_local.bat` |
-| 验证 | 打开 <http://localhost:8003>；analyzer <http://localhost:8001> |
+| 验证 | 打开 <http://localhost:57803>；analyzer <http://localhost:57801> |
 
 验证用例：分析一段视频 → 场记单出现场景/标签 → 勾选片段剪辑（或直接用「🤖 AI 自动剪辑」填需求+目标时长一键出片）→ `ai-video-studio\output\` 出现成片。
 
@@ -61,14 +61,14 @@ copy .env.example .env     # Windows
 
 | 端口 | 服务 |
 | ---- | ---- |
-| 8001 | analyzer（理解/分析 API） |
-| 8002 | executor（剪辑执行） |
-| 8003 | planner（对话/剧本/场记单 Web） |
-| 11434 | Ollama（本地模型） |
+| 57801 | analyzer（理解/分析 API） |
+| 57802 | executor（剪辑执行） |
+| 57803 | planner（对话/剧本/场记单 Web） |
+| 57800 | Ollama（本地模型） |
 
 ## 7. 常见问题排查
 
-- **启动后 8003 打不开**：看控制台日志；确认 Ollama 已起（11434 通）。
+- **启动后 57803 打不开**：看控制台日志；确认 Ollama 已起（11434 通）。
 - **分析报模型未找到**：确认 `models\ollama\models` 与 whisper/clip 权重在位。
 - **本机跑不动视觉大模型 / 分析卡住很慢**：`.env` 设 `VLM_ENABLED=false`，分析走 CLIP 场景标注兜底（秒级），检索与 AI 自动剪辑不受影响。
 - **日志报 cublas64_12.dll / 转写失败**：`.env` 设 `ASR_DEVICE=cpu`。

@@ -3,7 +3,7 @@
 # 停止三个 uvicorn 服务（Ollama 保持运行，可手动关闭或保留供其他项目用）
 # ============================================================
 Write-Host "===== AI Video Studio 停止（无 Docker 版） ====="
-foreach ($port in 8001, 8002, 8003) {
+foreach ($port in 57801, 57802, 57803) {
     $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     foreach ($c in $conns) {
         $proc = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue

@@ -480,7 +480,8 @@ def _asr(path: Path) -> list[dict]:
             return []
 
     def _do_transcribe(model):
-        segments, _ = model.transcribe(str(path), vad_filter=True)
+        # initial_prompt 偏置简体中文（whisper 对港台/老剧素材偶尔输出繁体）
+        segments, _ = model.transcribe(str(path), vad_filter=True, initial_prompt="以下是普通话简体中文的句子。")
         return [
             {"start": round(s.start, 3), "end": round(s.end, 3), "text": s.text.strip(), "speaker": None}
             for s in segments
@@ -812,10 +813,21 @@ def _transcribe_only(file: str, force: bool = False) -> dict:
     analysis_path, frames_dir = _analysis_paths(src)
     old = util.load_json(analysis_path) if analysis_path.exists() else None
     if old and old.get("speech") and not force:
+        _update_manifest(src, old)  # 只提取字幕也要标记"已分析"，否则前端不让人勾选
         return {"file": file, "speech": old["speech"], "duration_sec": old.get("duration_sec"), "cached": True}
     info = media.probe(src)
     speech = _asr(src)
     if old:
+        # 重跑转写会换新台词行：按时间重叠继承旧的说话人标注，避免重提取丢speaker
+        old_speech = old.get("speech") or []
+        for sp in speech:
+            best, best_ov = None, 0.0
+            for osp in old_speech:
+                ov = min(float(sp["end"]), float(osp.get("end") or 0)) - max(float(sp["start"]), float(osp.get("start") or 0))
+                if ov > best_ov:
+                    best_ov, best = ov, osp
+            if best is not None and best.get("speaker") and best_ov > 0.5 * max(0.1, float(sp["end"]) - float(sp["start"])):
+                sp["speaker"] = best.get("speaker")
         old["speech"] = speech
         old.setdefault("analysis_meta", {})["asr_at"] = util.now_iso()
         util.save_json(analysis_path, old)
@@ -840,6 +852,7 @@ def _transcribe_only(file: str, force: bool = False) -> dict:
                               "analysis_dir": str(frames_dir)},
         }
         util.save_json(analysis_path, a)
+    _update_manifest(src, a)
     return {"file": file, "speech": speech, "duration_sec": a.get("duration_sec"), "cached": False}
 
 

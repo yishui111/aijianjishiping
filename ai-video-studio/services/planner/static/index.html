@@ -86,6 +86,9 @@
   .modal { position:fixed; inset:0; background:rgba(0,0,0,.62); display:none; align-items:center; justify-content:center; z-index:60; }
   .modal.show { display:flex; }
   .modal-box { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px; width:min(780px,94vw); max-height:92vh; overflow-y:auto; }
+  /* ③ 剪辑工具：独立全屏页（占满视口，像单独一个页面） */
+  #edit-modal.show { display:block; }
+  #edit-modal .modal-box { width:100vw; height:100vh; max-width:100%; max-height:100%; border-radius:0; border:none; padding:14px 18px; overflow-y:auto; }
   .modal-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
   .modal-head b { flex:1; font-size:15px; word-break:break-all; }
   #pv-video, #pv-img { width:100%; max-height:50vh; background:#000; border-radius:8px; display:block; }
@@ -113,19 +116,14 @@
     <span class="badge">字幕驱动的视频剪辑</span>
   </header>
 
-  <div class="modelbar" id="model-bar">
-    <span class="muted">🧠 视觉大模型（可选，跑不动可关）：</span>
-    <b id="model-state">未加载</b>
-    <span class="muted" id="model-detail">字幕剪辑用本地语音模型（faster-whisper，已内置；models/whisper-medium 存在则自动用更精准的 medium）</span>
-  </div>
-
-  <div class="tabs">
-    <button class="tab active" id="tabbtn-analyze" onclick="showTab('analyze')">① 素材库 · 提取字幕<span class="sv">分析服务 analyzer :8001（本地字幕模型）</span></button>
-    <button class="tab" id="tabbtn-work" onclick="showTab('work')">② 字幕剪辑 · 手动精剪<span class="sv">方案 planner :8003 + 执行 executor :8002</span></button>
+    <div class="tabs">
+    <button class="tab active" id="tabbtn-analyze" onclick="showTab('analyze')">① 字幕分析<span class="sv">声音→字幕阶层 JSON（分析服务 :57801）</span></button>
+    <button class="tab" id="tabbtn-work" onclick="showTab('work')">② 一句话剪辑<span class="sv">关键词/一句话/剧本 → 剪出来（planner :57803 + executor :57802）</span></button>
   </div>
   <div class="svc-map">
-    <span><b>① 素材库</b> → 分析服务（:8001）：对整个目录批量「提取字幕」（本地语音模型出带时间戳的台词）；不想分析也可以按时间规则批量剪。</span>
-    <span><b>② 字幕剪辑</b> → 方案服务（:8003，一句话智能勾选台词）+ 执行服务（:8002，无损剪切/拼接/烧字幕）：勾选台词 → 剪出片段 → 下载成片 / 烧硬字幕 / 导出剪映草稿 / SRT；也可合并进时间线手动精剪。</span>
+    <span><b>① 字幕分析</b> = 声音分析：选目录点「提取字幕」，本地字幕模型把每个视频的声音转成带时间戳的对白，存进分析文档 JSON（哪个时间段出现什么字幕，含说话人）；并支持「自动加字幕」（烧录/SRT）。</span>
+    <span><b>② 一句话剪辑</b> = 对字幕阶层下命令：输入关键词（如"孙悟空"）或一句话/剧本，命中所有对应时间区间 → 全部剪出来，可烧硬字幕/导出剪映草稿/SRT。</span>
+    <span><b>③ 剪辑工具</b>（工具页，非核心）：素材卡片点「🎬 剪辑」进入剪映式时间线（拖边裁剪/排序/分割/快捷键），手动精修。</span>
   </div>
 
   <!-- 步骤1+3：目录列表 -->
@@ -135,32 +133,15 @@
     <div id="folder-list"></div>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="btn-scan" onclick="scanFolder(false, 'asr')">🔊 提取字幕（全目录）</button>
-      <button class="btn secondary" id="btn-rescan" onclick="scanFolder(true, 'asr')" title="已有台词也重跑一遍语音转写。会覆盖原台词">🔁 重新提取（覆盖）</button>
+      <button class="btn secondary" id="btn-rescan" onclick="scanFolder(true, 'asr')" title="已有台词也重跑一遍语音转写。会覆盖原台词（说话人标注会按时间自动继承）">🔁 重新提取（覆盖）</button>
+      <button class="btn secondary" id="btn-folder-speakers" onclick="speakersFolder()" title="对目录内所有已有台词的素材标注说话人（谁在说话）">🗣 说话人（全目录）</button>
+      <button class="btn secondary" id="btn-folder-json" onclick="exportSubtitlesJSON()" title="把目录内所有视频的对白+时间戳+说话人汇总成一个 JSON 文件">📄 导出台词JSON</button>
       <button class="btn secondary" id="btn-refresh" onclick="loadFolders()">🔄 刷新状态</button>
       <button class="btn secondary" id="btn-goto-mats" onclick="gotoMaterials()" disabled>下一步：选择素材 →</button>
     </div>
     <div id="scan-progress" class="muted" style="margin-top:10px"></div>
 
-    <h2 style="margin-top:18px">⚡ 按时间规则批量剪 <span class="hint">选中文件夹后按 时:分:秒 批量去片头片尾（执行服务直剪 :8002），不需要字幕</span></h2>
-    <div class="selbar">
-      <span class="muted">开头</span>
-      <input type="number" id="bh" placeholder="时" style="width:58px" min="0">
-      <input type="number" id="bm" placeholder="分" style="width:58px" min="0" max="59">
-      <input type="number" id="bs" placeholder="秒" style="width:58px" min="0" max="59">
-      <span class="muted">结束</span>
-      <input type="number" id="eh" placeholder="时" style="width:58px" min="0">
-      <input type="number" id="em" placeholder="分" style="width:58px" min="0" max="59">
-      <input type="number" id="es" placeholder="秒" style="width:58px" min="0" max="59">
-      <select id="batch-res">
-        <option value="原样">原样（无损·秒级）</option>
-        <option value="720p">720p（转码·慢）</option>
-        <option value="1080p">1080p（转码·慢）</option>
-      </select>
-      <button class="btn ok" id="btn-batch" onclick="startBatch()">⚡ 批量剪</button>
-    </div>
-    <div class="muted" style="margin-top:6px">填 时/分/秒（不填算 0）。<b>结束三个都空 = 到结尾</b>。例：开头 0 分 1 秒 30 → 去片头 1分30秒；开头 0 分 3 秒 0、结束空 → 去头 3 分钟；开头 0 分 1 秒 0、结束 0 分 5 秒 0 → 保留 1~5 分钟。</div>
-    <div id="batch-status" class="muted" style="margin-top:8px"></div>
-    <div id="batch-list"></div>
+    
   </div>
 
   <!-- 步骤4：素材选择 -->
@@ -174,7 +155,7 @@
       <button class="btn ok sm" id="btn-merge-tl" onclick="openEditSelected()" disabled>✂️ 手动精剪（合并进时间线）</button>
       <button class="btn secondary sm" onclick="refreshMaterials()">🔄 刷新</button>
     </div>
-    <div class="muted" style="margin-top:4px">勾选素材后两种剪法：<b>💬 字幕剪辑</b>（本页下方，提取台词→勾句子→剪出来，推荐）｜<b>✂️ 手动精剪</b>（上面按钮，进时间线拖边裁剪/排序/分割）。按时间规则批量剪在 ①。剪完可 <b>下载成片 / 烧硬字幕 / 导出剪映草稿 / SRT</b>。</div>
+    <div class="muted" style="margin-top:4px">选中已分析（已有台词）的素材，然后三种方式下命令：<b>🎯 关键词剪辑</b>（本页下方，输入"孙悟空"这类词，包含它的字幕区间全剪出来，最直接）｜<b>🪄 一句话智能勾选</b>（意思相近也能匹配，还可 🗣 标记说话人后"把某人说的话剪出来"）｜<b>📜 按剧本剪</b>（贴剧本逐条匹配）。剪完可 <b>下载成片 / 烧硬字幕（自动加字幕）/ 导出剪映草稿 / SRT</b>；要手动精修就点 <b>✂️ 手动精剪</b> 进剪映式剪辑工具页。</div>
     <div id="mat-loading" class="muted hidden"><span class="loading"></span>加载素材...</div>
     <div class="grid" id="mat-list"></div>
 
@@ -182,10 +163,15 @@
     <div class="selbar">
       <button class="btn" id="btn-sub-extract" onclick="subExtract(false)">🔊 对勾选素材提取字幕</button>
       <button class="btn secondary sm" onclick="subExtract(true)">🔁 重新提取（覆盖）</button>
+      <button class="btn secondary sm" id="btn-sub-speakers" onclick="subSpeakers(false)" title="AI 根据台词上下文推断每句是谁说的，写回分析文档。之后就能用「把某人说的话剪出来」">🗣 标记说话人</button>
       <span class="muted" id="sub-file-label"></span>
     </div>
     <div class="chatbar" style="margin:8px 0">
-      <input type="text" id="sub-query" placeholder="一句话说明你要什么，如：孙悟空和唐僧的对话 / 石猴出世的段落" style="flex:1">
+      <input type="text" id="sub-keywords" placeholder="🎯 关键词剪辑：字幕里包含这些字的区间全剪出来。多个词用空格隔开，如：孙悟空 金箍棒" style="flex:1">
+      <button class="btn ok" id="btn-sub-kw" onclick="keywordSelect()">🎯 关键词全选</button>
+    </div>
+    <div class="chatbar" style="margin-bottom:8px">
+      <input type="text" id="sub-query" placeholder="🪄 一句话智能勾选（意思相近也算）：如 孙悟空和唐僧的对话 / 石猴出世的段落" style="flex:1">
       <button class="btn" id="btn-sub-match" onclick="subMatch()">🪄 一句话智能勾选</button>
       <button class="btn secondary sm" onclick="subCheckAll(true)">全选</button>
       <button class="btn secondary sm" onclick="subCheckAll(false)">清空</button>
@@ -200,6 +186,19 @@
     <div id="sub-lines" style="max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:var(--panel2);margin-top:8px"></div>
     <div id="sub-result"></div>
 
+    <h3 style="margin-top:16px">📜 按剧本剪 <span class="hint">先提取字幕，再贴剧本（每行一条：一句对白或一个镜头描述）→ 匹配台词 → 按剧本顺序剪出成片</span></h3>
+    <div class="chatbar" style="margin-bottom:8px">
+      <textarea id="script-cut-input" placeholder="每行一条，如：&#10;石猴出世，石头炸开&#10;孙悟空和师父的对话&#10;把猪八戒说的话都剪出来"></textarea>
+    </div>
+    <div class="selbar">
+      <button class="btn" id="btn-script-match" onclick="scriptMatchLines()">🎯 按剧本匹配台词</button>
+      <label class="muted" style="display:flex;align-items:center;gap:4px" title="不勾=只匹配当前提取了字幕的素材；勾上=整个目录所有已提取字幕的视频都参与匹配（跨视频剪）"><input type="checkbox" id="script-use-folder"> 🌐 用整个目录的台词</label>
+      <button class="btn secondary sm" onclick="exportJY(scriptOrderSels(), '剧本剪辑', 'script-cut-result')">🪄 导出剪映草稿</button>
+      <span class="muted">命中的台词按剧本顺序拼接；也可以转成手动勾选微调后再剪</span>
+    </div>
+    <div id="script-cut-result"></div>
+  </div>
+</div>
 
 <div class="modal" id="pv-modal">
   <div class="modal-box">
@@ -241,7 +240,7 @@
     <div class="modal-head">
       <b>🎬 时间线剪辑</b>
       <span class="muted" id="edit-name"></span>
-      <button class="btn sm secondary" onclick="closeEdit()">✕ 关闭</button>
+      <button class="btn sm secondary" onclick="closeEdit()">↩ 返回（③ 剪辑工具：剪映式手动精修页）</button>
     </div>
     <div style="display:flex;gap:14px;flex-wrap:wrap">
       <div style="flex:1;min-width:320px">
@@ -292,34 +291,17 @@
 const $ = id => document.getElementById(id);
 let folders = [], currentFolder = null, materials = [], selected = new Set();
 
-// ---------- 分析模型按需加载 ----------
-// 启动时模型不加载；点「分析」才加载 qwen2.5vl:3b；其他操作（检索/剧本/批量）自动卸载释放显存。
+// ---------- 视觉大模型已下线：字幕剪辑只依赖本地语音模型（faster-whisper），以下保留空实现 ----------
 let modelTimer = null, modelLoading = false;
-function refreshModelStatus() {
-  fetch("/api/model_status").then(r => r.json()).then(d => {
-    const el = $("model-state");
-    if (!el) return;
-    const loaded = d.loaded || [];
-    const vlmUp = loaded.some(m => String(m).split(":")[0] === "qwen2.5vl" || String(m).startsWith("qwen2.5vl"));
-    if (vlmUp) { el.textContent = "已加载"; el.className = "loaded"; $("model-detail").textContent = "分析模型就绪，正在用 VLM 写场景描述"; }
-    else if (modelLoading) { el.textContent = "加载中…"; el.className = ""; $("model-detail").textContent = "首次加载分析模型约需 1~2 分钟；加载失败会自动转 CLIP 标注兜底"; }
-    else { el.textContent = "未加载"; el.className = ""; $("model-detail").textContent = "分析和检索都有免 VLM 兜底（CLIP 场景标注）；点「分析」才按需加载"; }
-  }).catch(() => {});
-}
+function refreshModelStatus() { /* 视觉大模型已下线 */ }
 function unloadVLM() {
   if (scanTimer) return;  // 分析进行中不卸载，避免中断 VLM 调用
   modelLoading = false;
   fetch("/api/model_unload", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
     .then(r => r.json()).then(() => refreshModelStatus()).catch(() => {});
 }
-function markModelLoading() {
-  modelLoading = true;
-  const el = $("model-state");
-  if (el) { el.textContent = "加载中…"; el.className = ""; $("model-detail").textContent = "首次加载分析模型约需 1~2 分钟，请稍候（本素材分析完会自动释放）"; }
-  if (modelTimer) clearInterval(modelTimer);
-  modelTimer = setInterval(refreshModelStatus, 3000);  // 分析期间每 3 秒看一次模型是否就绪
-}
-function stopModelPoll() { if (modelTimer) { clearInterval(modelTimer); modelTimer = null; } refreshModelStatus(); }
+function markModelLoading() { /* no-op */ }
+function stopModelPoll() { /* no-op */ }
 
 function toast(text, ms = 2500) {
   const t = $("toast"); t.textContent = text; t.classList.add("show");
@@ -327,59 +309,6 @@ function toast(text, ms = 2500) {
 }
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 function fmtDur(sec) { if (!sec) return "-"; sec = Math.round(sec); return Math.floor(sec/60) + ":" + String(sec%60).padStart(2,"0"); }
-
-// ---------- 免分析批量剪辑（文件夹按时间规则批量切） ----------
-let batchTimer = null;
-function hmsSec(h, m, s) { return (parseInt(h) || 0) * 3600 + (parseInt(m) || 0) * 60 + (parseInt(s) || 0); }
-function startBatch() {
-  unloadVLM();  // 批量剪不需要分析模型，立即释放显存
-  const start = hmsSec($("bh").value, $("bm").value, $("bs").value);
-  const hasEnd = $("eh").value || $("em").value || $("es").value;
-  const end = hasEnd ? hmsSec($("eh").value, $("em").value, $("es").value) : null;
-  if (start === 0 && end == null) { toast("请填开头时间（时/分/秒）"); return; }
-  if (!currentFolder) { toast("先在目录列表选中一个文件夹"); return; }
-  const btn = $("btn-batch"); btn.disabled = true;
-  $("batch-status").textContent = "启动批量剪辑...";
-  const desc = `开头 ${start}s` + (end != null ? ` 到 ${end}s` : " 到结尾");
-  fetch("/api/batch_clip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder: currentFolder, start, end, resolution: $("batch-res").value }) })
-    .then(r => r.json())
-    .then(d => {
-      if (d.error) { toast(d.error); $("batch-status").textContent = "❌ " + d.error; return; }
-      $("batch-status").textContent = `开始批量剪 ${d.total} 个视频：${desc}`;
-      $("batch-list").innerHTML = "";
-      if (batchTimer) clearInterval(batchTimer);
-      batchTimer = setInterval(() => pollBatch(d.batch_id), 2500);
-    })
-    .catch(e => { toast("启动失败: " + e.message); $("batch-status").textContent = "❌ " + e.message; })
-    .finally(() => btn.disabled = false);
-}
-function pollBatch(id) {
-  fetch("/api/batch_status?batch_id=" + encodeURIComponent(id))
-    .then(r => r.json())
-    .then(d => {
-      if (d.error) { $("batch-status").textContent = "❌ " + d.error; if (batchTimer) clearInterval(batchTimer); return; }
-      $("batch-status").textContent = `处理中 ${d.done}/${d.total}（${d.rule}）...`;
-      const box = $("batch-list");
-      box.innerHTML = "";
-      (d.results || []).forEach((item, i) => {
-        const row = document.createElement("div");
-        row.className = "snip";
-        if (item.ok) {
-          const url = "/materials/" + item.output;  // 成片已移到素材/批量/ 子目录
-          row.innerHTML = `<div class="snip-head"><b>${i + 1}</b> <span>${esc(item.file.split("/").pop())}</span> → <span class="muted">批量/</span> <a href="${url}" target="_blank" style="color:#86efac">⬇ 查看成片</a></div>`;
-        } else {
-          row.innerHTML = `<div class="snip-head"><b>${i + 1}</b> <span>${esc(item.file.split("/").pop())}</span> <span class="muted">❌ ${esc(item.error || "失败")}</span></div>`;
-        }
-        box.appendChild(row);
-      });
-      if (d.finished) {
-        if (batchTimer) clearInterval(batchTimer); batchTimer = null;
-        const ok = (d.results || []).filter(x => x.ok).length;
-        $("batch-status").textContent = `✅ 批量完成：${ok}/${d.total} 成功` + (d.error ? `，错误：${d.error}` : "");
-      }
-    })
-    .catch(() => {});
-}
 
 // ---------- 目录 ----------
 async function loadFolders() {
@@ -410,7 +339,7 @@ function renderFolders() {
       currentFolder = f.is_root ? "." : f.name;
       document.querySelectorAll(".folder").forEach(x => x.style.borderColor = "");
       d.style.borderColor = "var(--accent)";
-      $("folder-hint").textContent = "已选中：「" + f.name + "」 可分析 / 重新分析 / 批量剪 / 下一步选素材";
+      $("folder-hint").textContent = "已选中：「" + f.name + "」 可提取字幕 / 标记说话人 / 导出台词JSON / 下一步选素材";
     };
     d.innerHTML = `
       <div class="fname">${f.is_root ? "📁 " : "📂 "}${esc(f.name)}</div>
@@ -461,7 +390,7 @@ async function scanFolder(force, mode) {
 }
 
 // ---------- 素材 ----------
-// 前台 Tab ⇄ 后台服务：① 素材分析=analyzer:8001 ② 剪辑出片=planner:8003+executor:8002 ③ 进阶剧本=planner:8003
+// 前台 Tab ⇄ 后台服务：① 素材分析=analyzer:57801 ② 剪辑出片=planner:57803+executor:57802 ③ 进阶剧本=planner:57803
 const TABS = { analyze: "card-folders", work: "card-chat" };
 function showTab(name) {
   for (const [key, id] of Object.entries(TABS)) {
@@ -498,18 +427,16 @@ function renderMaterials() {
     const d = document.createElement("div");
     d.className = "mat" + (selected.has(m.file) ? " selected" : "");
     d.onclick = () => {
-      if (!m.analyzed) { toast("该素材还未分析，请先在目录页点击「分析所选目录」"); return; }
+      // 字幕剪辑不需要"分析"：未提取字幕的素材直接选，选完点「提取字幕」即可
       toggleSelect(m.file, d);
     };
     if (!m.analyzed) d.style.opacity = ".45";
     d.innerHTML = `
-      <div class="st ${m.analyzed ? "done" : "pending"}">${m.analyzed ? "已分析" : "未分析"}</div>
+      <div class="st ${m.analyzed ? "done" : "pending"}">${m.analyzed ? "已有台词" : "未提取字幕"}</div>
       <div class="name">${esc(m.name)}</div>
       <button class="btn sm pv-btn" title="预览素材并手动调整起止时间剪辑" onclick="event.stopPropagation();openPreview(${JSON.stringify(m.file)}, ${JSON.stringify(m.name)})">👁 预览</button>
       <button class="btn sm pv-btn" title="进入时间线剪辑：勾选多个素材会全部合并进来，可分割/删除/拼接出片" onclick="event.stopPropagation();openEditSmart(${JSON.stringify(m.file)}, ${JSON.stringify(m.name)})">🎬 剪辑</button>
-      <div class="meta">${fmtDur(m.duration_sec)}${m.duration_sec ? " · " : ""}${m.scenes ? m.scenes + " 场景" : ""} · ${m.size_mb} MB</div>
-      ${m.summary ? `<div class="sum">${esc(m.summary)}</div>` : ""}
-      ${m.tags && m.tags.length ? `<div class="tags">${m.tags.slice(0,5).map(t => `<span>${esc(t)}</span>`).join("")}</div>` : ""}
+      <div class="meta">${fmtDur(m.duration_sec)}${m.duration_sec ? " · " : ""}${m.size_mb} MB</div>
       <div class="ck"></div>`;
     box.appendChild(d);
   });
@@ -1338,12 +1265,28 @@ async function subExtract(force) {
       const r = await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file: f, force: !!force }) });
       const d = await r.json();
       if (d.error) { err += f.split("/").pop() + ": " + d.error + "；"; continue; }
-      (d.speech || []).forEach(sp => subLines.push({ i: subLines.length, start: sp.start, end: sp.end, text: sp.text, file: f }));
+      (d.speech || []).forEach(sp => subLines.push({ i: subLines.length, start: sp.start, end: sp.end, text: sp.text, file: f, speaker: sp.speaker || null }));
     }
     renderSubLines();
     if (err) toast(err.slice(0, 80));
     else toast(files.length + " 个素材共 " + subLines.length + " 句台词");
   } catch (e) { box.innerHTML = '<div class="msg err">❌ ' + esc(e.message) + '</div>'; }
+  btn.disabled = false;
+}
+async function subSpeakers(force) {
+  if (!subLines.length) { toast("先提取字幕"); return; }
+  const files = [...new Set(subLines.map(l => l.file))];
+  const btn = $("btn-sub-speakers"); btn.disabled = true;
+  try {
+    for (const f of files) {
+      const r = await fetch("/api/attribute_speakers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file: f, force: !!force }) });
+      const d = await r.json();
+      if (d.error) { toast(f.split("/").pop() + ": " + d.error); continue; }
+      (d.speakers || []).forEach(s => { const l = subLines.find(x => x.file === f && x.i === s.i); if (l) l.speaker = s.speaker; });
+    }
+    renderSubLines();
+    toast("说话人标注完成（文本推断，之后可直接说「把某人说的话剪出来」）");
+  } catch (e) { toast("失败: " + e.message); }
   btn.disabled = false;
 }
 function renderSubLines() {
@@ -1354,6 +1297,7 @@ function renderSubLines() {
     d.style.cssText = "display:flex;gap:8px;align-items:flex-start;padding:5px 10px;border-bottom:1px solid var(--border);cursor:pointer";
     d.innerHTML = `<input type="checkbox" ${subChecked.has(l.i) ? "checked" : ""} style="margin-top:3px">` +
       `<span class="muted" style="min-width:100px;font-size:12px">${fmtSec(l.start)}-${fmtSec(l.end)}</span>` +
+      (l.speaker ? `<span style="font-size:11px;color:#f59e0b;flex-shrink:0">${esc(l.speaker)}</span>` : "") +
       `<span style="font-size:13px">${esc(l.text)}</span>` +
       `<span class="muted" style="font-size:11px;margin-left:auto;flex-shrink:0">${esc((l.file || "").split("/").pop())}</span>`;
     d.onclick = () => { if (subChecked.has(l.i)) subChecked.delete(l.i); else subChecked.add(l.i); renderSubLines(); };
@@ -1367,6 +1311,23 @@ function renderSubLines() {
   $("sub-file-label").textContent = subLines.length ? `共 ${subLines.length} 句台词` : "";
 }
 function subCheckAll(on) { subChecked.clear(); if (on) subLines.forEach(l => subChecked.add(l.i)); renderSubLines(); }
+async function keywordSelect() {
+  const raw = $("sub-keywords").value.trim();
+  if (!raw) { toast("输入关键词（多个用空格隔开）"); return; }
+  if (!subLines.length) { toast("先提取字幕"); return; }
+  const keywords = raw.split(/[\s,，、;；]+/).filter(Boolean);
+  const btn = $("btn-sub-kw"); btn.disabled = true;
+  try {
+    const r = await fetch("/api/keyword_lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keywords, lines: subLines.map(l => ({ i: l.i, start: l.start, end: l.end, text: l.text, speaker: l.speaker || null })) }) });
+    const d = await r.json();
+    if (d.error) { toast(d.error); return; }
+    subChecked.clear();
+    (d.picked || []).forEach(pi => subChecked.add(pi.i));
+    renderSubLines();
+    toast(`关键词 [${(d.keywords || []).join(" ")}] 命中 ${subChecked.size}/${subLines.length} 句，直接点「剪勾选的台词」`);
+  } catch (e) { toast("失败: " + e.message); }
+  btn.disabled = false;
+}
 async function subMatch() {
   const q = $("sub-query").value.trim();
   if (!q) { toast("先输入一句话说明你要什么"); return; }
@@ -1436,11 +1397,129 @@ function subDownloadSrt() {
   a.click();
 }
 
+// ---------- 按剧本剪：剧本逐条 ↔ 台词匹配 → 按剧本顺序剪接 ----------
+let scriptMatches = [];
+let scriptLinesPool = [];   // 剧本匹配用的台词池（当前素材 or 整个目录）
+async function scriptMatchLines() {
+  const txt = $("script-cut-input").value.trim();
+  if (!txt) { toast("先写剧本（每行一条）"); return; }
+  const useFolder = $("script-use-folder").checked;
+  let pool = subLines;
+  if (useFolder) {
+    const btn0 = $("btn-script-match"); btn0.disabled = true;
+    try {
+      const r0 = await fetch("/api/folder_lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder: currentFolder || "." }) });
+      const d0 = await r0.json();
+      if (d0.error) { $("script-cut-result").innerHTML = '<div class="msg err">❌ ' + esc(d0.error) + '</div>'; return; }
+      pool = d0.lines || [];
+      if (!pool.length) { toast("目录里还没有任何台词——先在 ① 提取字幕"); return; }
+    } catch (e) { toast("加载目录台词失败: " + e.message); return; }
+    finally { btn0.disabled = false; }
+  } else if (!subLines.length) { toast("先提取字幕（上面的 🔊 按钮）"); return; }
+  scriptLinesPool = pool;
+  const queries = txt.split("\n").map(s => s.trim()).filter(Boolean);
+  const btn = $("btn-script-match"); btn.disabled = true;
+  try {
+    const r = await fetch("/api/script_match_lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ queries, lines: pool.map(l => ({ i: l.i, start: l.start, end: l.end, text: l.text, speaker: l.speaker || null })) }) });
+    const d = await r.json();
+    if (d.error) { $("script-cut-result").innerHTML = '<div class="msg err">❌ ' + esc(d.error) + '</div>'; return; }
+    scriptMatches = d.matches || [];
+    renderScriptMatches();
+  } catch (e) { toast("失败: " + e.message); }
+  btn.disabled = false;
+}
+function scriptOrderSels() {
+  const sels = []; const seen = new Set();
+  scriptMatches.slice().sort((a, b) => a.q - b.q).forEach(m => m.pick.forEach(pi => {
+    if (!seen.has(pi.i)) {
+      seen.add(pi.i);
+      const l = scriptLinesPool.find(x => x.i === pi.i);
+      if (l) sels.push({ file: l.file, start: l.start, end: l.end });
+    }
+  }));
+  return sels;
+}
+function renderScriptMatches() {
+  const box = $("script-cut-result");
+  if (!scriptMatches.length) { box.innerHTML = ""; return; }
+  let html = "";
+  scriptMatches.forEach(m => {
+    const names = m.pick.map(pi => { const l = scriptLinesPool.find(x => x.i === pi.i); return "#" + pi.i + " " + (l ? l.text.slice(0, 12) : ""); }).join("、");
+    html += `<div class="msg tool" style="font-size:12px">剧本${m.q + 1}「${esc((m.query || "").slice(0, 18))}」→ ${m.pick.length ? esc(names) : '<span class="muted">未找到对应台词</span>'}</div>`;
+  });
+  const total = scriptMatches.reduce((a, m) => a + m.pick.length, 0);
+  const cross = $("script-use-folder").checked ? "（跨 " + new Set(scriptLinesPool.map(l => l.file)).size + " 个视频）" : "";
+  html += `<div style="margin:8px 0"><button class="btn ok" onclick="scriptCut()" ${total ? "" : "disabled"}>🎬 按剧本顺序剪（${total} 句拼一条${cross}）</button>` +
+    ($("script-use-folder").checked ? "" : ' <button class="btn secondary sm" onclick="scriptToCheckboxes()">↩ 转手动勾选微调</button>') + `</div>`;
+  box.innerHTML = html;
+}
+// ---------- ① 全目录：说话人标注 + 台词JSON ----------
+async function speakersFolder() {
+  if (!currentFolder) { toast("先点击选择一个素材目录"); return; }
+  const btn = $("btn-folder-speakers"); btn.disabled = true;
+  const prog = $("scan-progress");
+  try {
+    prog.innerHTML = '<span class="loading"></span>读取目录台词...';
+    const r = await fetch("/api/folder_lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder: currentFolder }) });
+    const d = await r.json();
+    if (d.error) { prog.innerHTML = "❌ " + esc(d.error); return; }
+    const files = [...new Set((d.lines || []).map(l => l.file))];
+    if (!files.length) { prog.innerHTML = "❌ 该目录还没有台词——先「提取字幕」"; return; }
+    let done = 0, errs = 0;
+    for (const f of files) {
+      prog.innerHTML = `<span class="loading"></span>说话人标注 ${done}/${files.length}：${esc(f.split("/").pop())}`;
+      try {
+        const rr = await fetch("/api/attribute_speakers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file: f }) });
+        const dd = await rr.json();
+        if (dd.error) errs++;
+      } catch (e) { errs++; }
+      done++;
+    }
+    prog.innerHTML = `✅ 说话人标注完成（${files.length - errs}/${files.length} 个素材；文本推断，已标过的自动跳过）`;
+  } catch (e) { prog.innerHTML = "❌ " + esc(e.message); }
+  btn.disabled = false;
+}
+async function exportSubtitlesJSON() {
+  if (!currentFolder) { toast("先点击选择一个素材目录"); return; }
+  const btn = $("btn-folder-json"); btn.disabled = true;
+  const prog = $("scan-progress");
+  prog.innerHTML = '<span class="loading"></span>汇总台词 JSON 中...';
+  try {
+    const r = await fetch("/api/export_subtitles_json", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder: currentFolder }) });
+    const d = await r.json();
+    if (d.error) { prog.innerHTML = "❌ " + esc(d.error); return; }
+    prog.innerHTML = `✅ 台词 JSON 已生成：${d.video_count} 个视频 / ${d.line_count} 句 <a href="${d.url}" download style="color:#86efac;margin-left:6px">⬇ 下载</a>（含对白/时间戳/说话人，给剧本剪辑或外部工具用）`;
+  } catch (e) { prog.innerHTML = "❌ " + esc(e.message); }
+  btn.disabled = false;
+}
+async function scriptCut() {
+  const sels = scriptOrderSels();
+  if (!sels.length) { toast("剧本没有命中台词"); return; }
+  const box = $("script-cut-result");
+  box.insertAdjacentHTML("beforeend", '<div id="script-cut-busy" class="msg tool"><span class="loading"></span>按剧本顺序剪出片段中（无损拼接）...</div>');
+  try {
+    const r = await fetch("/api/clip_selected", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ selections: sels }) });
+    const d = await r.json();
+    $("script-cut-busy")?.remove();
+    if (d.error) { box.innerHTML = '<div class="msg err">❌ ' + esc(d.error) + '</div>'; return; }
+    if (d.output) {
+      const url = "/output/" + d.output.split("/").slice(-2).join("/");
+      box.innerHTML = `<div class="msg ok">✅ 剧本成片已生成（${sels.length} 句按剧本顺序拼接）<a href="${url}" download style="color:#86efac;margin-left:8px">⬇ 下载</a></div><video src="${url}" controls style="width:100%;border-radius:8px;margin-top:8px;background:#000"></video>`;
+    } else box.innerHTML = '<div class="msg err">❌ ' + esc(d.detail || JSON.stringify(d)) + '</div>';
+  } catch (e) { $("script-cut-busy")?.remove(); box.innerHTML = '<div class="msg err">❌ ' + esc(e.message) + '</div>'; }
+}
+function scriptToCheckboxes() {
+  if ($("script-use-folder").checked) { toast("目录模式请直接「按剧本顺序剪」或导出剪映草稿"); return; }
+  subChecked.clear();
+  scriptOrderSels().forEach(s => { const l = subLines.find(x => x.file === s.file && Math.abs(x.start - s.start) < 0.001); if (l) subChecked.add(l.i); });
+  renderSubLines();
+  toast("剧本命中的台词已转成手动勾选，可增删后用上面按钮剪");
+}
+
 // init
 showTab("analyze");
 loadFolders();
-refreshModelStatus();
-setInterval(refreshModelStatus, 5000);  // 页面常驻轮询：KEEP_ALIVE 2 分钟到期自动卸载后状态也能及时更新
+/* 视觉模型状态轮询已随 VLM 一起下线 */
 (() => {
   const v = $("pv-video");
   v.addEventListener("loadedmetadata", () => {
