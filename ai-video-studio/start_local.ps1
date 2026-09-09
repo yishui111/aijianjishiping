@@ -1,6 +1,6 @@
 ﻿# ============================================================
 # AI Video Studio 启动脚本（无 Docker 版 / 本机原生）
-# 功能：启动 Ollama（本机,专用端口 57800） + analyzer(57801) + executor(57802) + planner(57803)
+# 功能：启动 Ollama（本机,专用端口 61800） + analyzer(61801) + executor(61802) + planner(61803)
 # 用法：双击 一键启动.bat 或 start_local.bat
 # ============================================================
 $ErrorActionPreference = "Stop"
@@ -61,22 +61,22 @@ Write-Host "===== AI Video Studio 启动（无 Docker 版） ====="
 # 说明：只启动服务，不加载任何模型（Ollama 懒加载）。
 #   分析模型 qwen2.5vl:3b 只在点"分析"时才加载；2 分钟不用自动卸载释放显存。
 $ollamaUp = $false
-if (Test-Port 57800) {
-    try { $null = Invoke-RestMethod -Uri "http://127.0.0.1:57800/api/tags" -TimeoutSec 3; $ollamaUp = $true } catch {}
+if (Test-Port 61800) {
+    try { $null = Invoke-RestMethod -Uri "http://127.0.0.1:61800/api/tags" -TimeoutSec 3; $ollamaUp = $true } catch {}
 }
 if (-not $ollamaUp) {
     Write-Host "[1/3] 启动 Ollama（模型目录: $ModelsDir）..."
     if (-not (Test-Path $OllamaExe)) { Write-Host "错误：未找到 Ollama: $OllamaExe"; exit 1 }
     $env:OLLAMA_MODELS = $ModelsDir
     $env:OLLAMA_KEEP_ALIVE = "2m"
-    $env:OLLAMA_HOST = "127.0.0.1:57800"   # 专用端口，与其他项目的 Ollama(11434) 互不干扰
+    $env:OLLAMA_HOST = "127.0.0.1:61800"   # 专用端口，与其他项目的 Ollama(11434) 互不干扰
     Start-Process -FilePath $OllamaExe -ArgumentList "serve" -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $LogDir "ollama.log") -RedirectStandardError (Join-Path $LogDir "ollama.err")
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {   # 冷启动最多等 120 秒（机器上其他服务多时会慢）
         Start-Sleep -Seconds 2
-        if (Test-Port 57800) {
-            try { $null = Invoke-RestMethod -Uri "http://127.0.0.1:57800/api/tags" -TimeoutSec 2; $ready = $true; break } catch {}
+        if (Test-Port 61800) {
+            try { $null = Invoke-RestMethod -Uri "http://127.0.0.1:61800/api/tags" -TimeoutSec 2; $ready = $true; break } catch {}
         }
     }
     if (-not $ready) { Write-Host "错误：Ollama 启动失败（120 秒超时）"; exit 1 }
@@ -86,17 +86,17 @@ if (-not $ollamaUp) {
 }
 
 # ---------- 2. 启动三个服务 ----------
-Write-Host "[2/3] 启动 analyzer(57801) / executor(57802) / planner(57803) ..."
+Write-Host "[2/3] 启动 analyzer(61801) / executor(61802) / planner(61803) ..."
 $ts = Get-Date -Format "HHmmss"
-$ports = @{ 57801 = "services\analyzer"; 57802 = "services\executor"; 57803 = "services\planner" }
-foreach ($port in 57801, 57802, 57803) {
+$ports = @{ 61801 = "services\analyzer"; 61802 = "services\executor"; 61803 = "services\planner" }
+foreach ($port in 61801, 61802, 61803) {
     if (Test-Port $port) { Write-Host "  警告：端口 $port 已被占用，跳过"; continue }
     $svcDir = Join-Path $Root $ports[$port]
     $logFile = Join-Path $LogDir ("log_{0}_{1}.txt" -f $port, $ts)   # 唯一文件名，避免文件占用卡住
     $env:MATERIALS_DIR = $Materials
     $env:CONFIG_DIR = $ConfigDir
-    if ($port -eq 57801) {
-        Set-SvcEnv "VLM_BASE_URL" "http://127.0.0.1:57800/v1"
+    if ($port -eq 61801) {
+        Set-SvcEnv "VLM_BASE_URL" "http://127.0.0.1:61800/v1"
         Set-SvcEnv "VLM_MODEL" "qwen2.5vl:3b"
         Set-SvcEnv "VLM_ENABLED" "auto"   # 本机跑不动视觉大模型时在 .env 设 false
         Set-SvcEnv "NUM_CTX" "8192"
@@ -106,21 +106,21 @@ foreach ($port in 57801, 57802, 57803) {
         Set-SvcEnv "ASR_CPU_THREADS" "4"
         Set-SvcEnv "FACE_ENABLED" "false"
         Set-SvcEnv "CHINESE_CLIP_DIR" (Join-Path $Root "models\chinese-clip")
-    } elseif ($port -eq 57802) {
+    } elseif ($port -eq 61802) {
         Set-SvcEnv "OUTPUT_DIR" $OutputDir
     } else {
         # 对话/剧本模型：.env 配了线上 API（PLANNER_BASE_URL / GEN_SCRIPT_API_KEY）就走线上，否则本地 Ollama
-        Set-SvcEnv "PLANNER_BASE_URL" "http://127.0.0.1:57800/v1"
+        Set-SvcEnv "PLANNER_BASE_URL" "http://127.0.0.1:61800/v1"
         Set-SvcEnv "PLANNER_MODEL" "qwen2.5:7b"
         Set-SvcEnv "PLANNER_API_KEY" ""
         Set-SvcEnv "GEN_SCRIPT_BASE_URL" "https://api.deepseek.com/v1"
         Set-SvcEnv "GEN_SCRIPT_MODEL" "deepseek-chat"
         Set-SvcEnv "GEN_SCRIPT_API_KEY" ""
-        Set-SvcEnv "OLLAMA_BASE" "http://127.0.0.1:57800"   # bge-m3 向量化/模型状态固定走本地 Ollama（专用端口）
+        Set-SvcEnv "OLLAMA_BASE" "http://127.0.0.1:61800"   # bge-m3 向量化/模型状态固定走本地 Ollama（专用端口）
         Set-SvcEnv "VLM_MODEL" "qwen2.5vl:3b"
         Set-SvcEnv "CHINESE_CLIP_DIR" (Join-Path $Root "models\chinese-clip")
-        Set-SvcEnv "ANALYZER_URL" "http://127.0.0.1:57801"
-        Set-SvcEnv "EXECUTOR_URL" "http://127.0.0.1:57802"
+        Set-SvcEnv "ANALYZER_URL" "http://127.0.0.1:61801"
+        Set-SvcEnv "EXECUTOR_URL" "http://127.0.0.1:61802"
         Set-SvcEnv "OUTPUT_DIR" $OutputDir
     }
     Start-Process -FilePath $VenvPython -ArgumentList "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "$port" `
@@ -130,7 +130,7 @@ Start-Sleep -Seconds 3
 
 # ---------- 3. 检查状态（轮询等待，analyzer 导入 torch 可能要 30~60 秒） ----------
 Write-Host "[3/3] 检查服务状态 ..."
-$pending = @(57801, 57802, 57803)
+$pending = @(61801, 61802, 61803)
 $deadline = (Get-Date).AddSeconds(90)
 while ($pending.Count -gt 0 -and (Get-Date) -lt $deadline) {
     foreach ($port in @($pending)) {
@@ -149,15 +149,15 @@ foreach ($port in $pending) {
 # ---------- 4. 打开浏览器 ----------
 if ($pending.Count -eq 0) {
     Write-Host "  正在打开浏览器 ..."
-    Start-Process "http://localhost:57803"
+    Start-Process "http://localhost:61803"
 } else {
-    Write-Host "  服务未全部就绪，本次不自动打开浏览器（可手动访问 http://localhost:57803）"
+    Write-Host "  服务未全部就绪，本次不自动打开浏览器（可手动访问 http://localhost:61803）"
 }
 
 Write-Host ""
 Write-Host "===== 启动完成 ====="
-Write-Host "  网页界面 : http://localhost:57803"
-Write-Host "  理解服务 : http://127.0.0.1:57801"
-Write-Host "  执行服务 : http://127.0.0.1:57802"
-Write-Host "  模型按需加载：启动不加载任何模型；分析有免 VLM 兜底（CLIP 标注），.env 设 VLM_ENABLED=false 可彻底关闭视觉大模型"
+Write-Host "  网页界面 : http://localhost:61803"
+Write-Host "  理解服务 : http://127.0.0.1:61801"
+Write-Host "  执行服务 : http://127.0.0.1:61802"
+Write-Host "  字幕模型 faster-whisper（medium 优先，显卡/CPU 自适应）按需加载；视觉大模型功能已下线"
 Write-Host "  关闭     : .\stop_local.ps1"

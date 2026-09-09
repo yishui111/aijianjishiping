@@ -117,8 +117,8 @@
   </header>
 
     <div class="tabs">
-    <button class="tab active" id="tabbtn-analyze" onclick="showTab('analyze')">① 字幕分析<span class="sv">声音→字幕阶层 JSON（分析服务 :57801）</span></button>
-    <button class="tab" id="tabbtn-work" onclick="showTab('work')">② 一句话剪辑<span class="sv">关键词/一句话/剧本 → 剪出来（planner :57803 + executor :57802）</span></button>
+    <button class="tab active" id="tabbtn-analyze" onclick="showTab('analyze')">① 字幕分析<span class="sv">声音→字幕阶层 JSON（分析服务 :61801）</span></button>
+    <button class="tab" id="tabbtn-work" onclick="showTab('work')">② 一句话剪辑<span class="sv">关键词/一句话/剧本 → 剪出来（planner :61803 + executor :61802）</span></button>
   </div>
   <div class="svc-map">
     <span><b>① 字幕分析</b> = 声音分析：选目录点「提取字幕」，本地字幕模型把每个视频的声音转成带时间戳的对白，存进分析文档 JSON（哪个时间段出现什么字幕，含说话人）；并支持「自动加字幕」（烧录/SRT）。</span>
@@ -132,8 +132,8 @@
     <div id="folder-loading" class="muted"><span class="loading"></span>加载目录...</div>
     <div id="folder-list"></div>
     <div class="row" style="margin-top:14px">
-      <button class="btn" id="btn-scan" onclick="scanFolder(false, 'asr')">🔊 提取字幕（全目录）</button>
-      <button class="btn secondary" id="btn-rescan" onclick="scanFolder(true, 'asr')" title="已有台词也重跑一遍语音转写。会覆盖原台词（说话人标注会按时间自动继承）">🔁 重新提取（覆盖）</button>
+      <button class="btn" id="btn-scan" onclick="analyzeSelectedFolders(false)">🔊 分析（提取字幕）</button>
+      <button class="btn secondary" id="btn-rescan" onclick="analyzeSelectedFolders(true)" title="已有台词也重跑一遍语音转写。会覆盖原台词（说话人标注会按时间自动继承）">🔁 重新分析（覆盖）</button>
       <button class="btn secondary" id="btn-folder-speakers" onclick="speakersFolder()" title="对目录内所有已有台词的素材标注说话人（谁在说话）">🗣 说话人（全目录）</button>
       <button class="btn secondary" id="btn-folder-json" onclick="exportSubtitlesJSON()" title="把目录内所有视频的对白+时间戳+说话人汇总成一个 JSON 文件">📄 导出台词JSON</button>
       <button class="btn secondary" id="btn-refresh" onclick="loadFolders()">🔄 刷新状态</button>
@@ -146,57 +146,39 @@
 
   <!-- 步骤4：素材选择 -->
   <div class="card" id="card-chat">
-    <h2>🎞️ 素材选择 <span class="hint" id="mat-hint"></span></h2>
+    <h2>✂️ 一句话剪辑 <span class="hint">选已分析的文件夹 → 说出/输入要剪的内容 → 勾选命中的句子（默认全选）→ 点「剪辑」</span></h2>
     <div class="selbar">
-      <button class="btn secondary sm" onclick="backToFolders()">← 返回目录</button>
-      <span class="count" id="sel-count">已选 0 个素材</span>
-      <button class="btn secondary sm" id="btn-sel-all" onclick="toggleSelectAll()">全选</button>
-      <button class="btn secondary sm" id="btn-sel-analyzed" onclick="selectAnalyzed()">选已分析</button>
-      <button class="btn ok sm" id="btn-merge-tl" onclick="openEditSelected()" disabled>✂️ 手动精剪（合并进时间线）</button>
-      <button class="btn secondary sm" onclick="refreshMaterials()">🔄 刷新</button>
-    </div>
-    <div class="muted" style="margin-top:4px">选中已分析（已有台词）的素材，然后三种方式下命令：<b>🎯 关键词剪辑</b>（本页下方，输入"孙悟空"这类词，包含它的字幕区间全剪出来，最直接）｜<b>🪄 一句话智能勾选</b>（意思相近也能匹配，还可 🗣 标记说话人后"把某人说的话剪出来"）｜<b>📜 按剧本剪</b>（贴剧本逐条匹配）。剪完可 <b>下载成片 / 烧硬字幕（自动加字幕）/ 导出剪映草稿 / SRT</b>；要手动精修就点 <b>✂️ 手动精剪</b> 进剪映式剪辑工具页。</div>
-    <div id="mat-loading" class="muted hidden"><span class="loading"></span>加载素材...</div>
-    <div class="grid" id="mat-list"></div>
-
-        <h2 style="margin-top:22px">💬 字幕剪辑 <span class="hint">提取字幕 → 勾选台词（或一句话智能勾选）→ 剪出片段；可烧硬字幕 / 导出剪映草稿 / SRT</span></h2>
-    <div class="selbar">
-      <button class="btn" id="btn-sub-extract" onclick="subExtract(false)">🔊 对勾选素材提取字幕</button>
-      <button class="btn secondary sm" onclick="subExtract(true)">🔁 重新提取（覆盖）</button>
-      <button class="btn secondary sm" id="btn-sub-speakers" onclick="subSpeakers(false)" title="AI 根据台词上下文推断每句是谁说的，写回分析文档。之后就能用「把某人说的话剪出来」">🗣 标记说话人</button>
-      <span class="muted" id="sub-file-label"></span>
+      <button class="btn secondary sm" onclick="backToFolders()">← 返回分析</button>
+      <span class="muted">已分析的文件夹</span>
+      <select id="cut-folder-sel" style="min-width:240px"><option value="">（选择已分析的文件夹）</option></select>
+      <button class="btn sm" onclick="loadCutFolder()">📂 加载台词阶层</button>
+      <span class="count" id="pool-count">未加载</span>
     </div>
     <div class="chatbar" style="margin:8px 0">
-      <input type="text" id="sub-keywords" placeholder="🎯 关键词剪辑：字幕里包含这些字的区间全剪出来。多个词用空格隔开，如：孙悟空 金箍棒" style="flex:1">
-      <button class="btn ok" id="btn-sub-kw" onclick="keywordSelect()">🎯 关键词全选</button>
-    </div>
-    <div class="chatbar" style="margin-bottom:8px">
-      <input type="text" id="sub-query" placeholder="🪄 一句话智能勾选（意思相近也算）：如 孙悟空和唐僧的对话 / 石猴出世的段落" style="flex:1">
-      <button class="btn" id="btn-sub-match" onclick="subMatch()">🪄 一句话智能勾选</button>
+      <button class="btn" id="btn-voice" onclick="toggleVoice(this)" title="点击开始录音，说完再点一次停止；本地语音模型识别成文字并自动匹配">🎤 语音输入</button>
+      <input type="text" id="sub-query" placeholder="我要剪出所有视频里的孙悟空" style="flex:1">
+      <button class="btn ok" id="btn-sub-match" onclick="subMatch()">🎯 匹配</button>
       <button class="btn secondary sm" onclick="subCheckAll(true)">全选</button>
       <button class="btn secondary sm" onclick="subCheckAll(false)">清空</button>
     </div>
     <div class="selbar" style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 12px">
       <span class="count" id="sub-count">已勾选 0 句台词</span>
-      <button class="btn ok" id="btn-sub-cut" onclick="subCut()" disabled>✂️ 剪勾选的台词（拼成一条）</button>
-      <label class="muted" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="sub-burn"> 烧录硬字幕（转码·慢）</label>
-      <button class="btn" id="btn-sub-jy" onclick="exportJY(subSelList(), '字幕剪辑', 'sub-result')" disabled>🪄 导出剪映草稿</button>
+      <button class="btn ok" id="btn-sub-cut" onclick="subCut()" disabled>✂️ 剪辑（命中的句子拼成一条）</button>
+      <label class="muted" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="sub-burn"> 自动加字幕（烧录·转码慢）</label>
+      <button class="btn" id="btn-sub-jy" onclick="exportJY(subSelList(), '一句话剪辑', 'sub-result')" disabled>🪄 导出剪映草稿</button>
       <button class="btn secondary" id="btn-sub-srt" onclick="subDownloadSrt()" disabled>💬 下载SRT</button>
     </div>
     <div id="sub-lines" style="max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:var(--panel2);margin-top:8px"></div>
     <div id="sub-result"></div>
 
-    <h3 style="margin-top:16px">📜 按剧本剪 <span class="hint">先提取字幕，再贴剧本（每行一条：一句对白或一个镜头描述）→ 匹配台词 → 按剧本顺序剪出成片</span></h3>
-    <div class="chatbar" style="margin-bottom:8px">
-      <textarea id="script-cut-input" placeholder="每行一条，如：&#10;石猴出世，石头炸开&#10;孙悟空和师父的对话&#10;把猪八戒说的话都剪出来"></textarea>
-    </div>
-    <div class="selbar">
-      <button class="btn" id="btn-script-match" onclick="scriptMatchLines()">🎯 按剧本匹配台词</button>
-      <label class="muted" style="display:flex;align-items:center;gap:4px" title="不勾=只匹配当前提取了字幕的素材；勾上=整个目录所有已提取字幕的视频都参与匹配（跨视频剪）"><input type="checkbox" id="script-use-folder"> 🌐 用整个目录的台词</label>
-      <button class="btn secondary sm" onclick="exportJY(scriptOrderSels(), '剧本剪辑', 'script-cut-result')">🪄 导出剪映草稿</button>
-      <span class="muted">命中的台词按剧本顺序拼接；也可以转成手动勾选微调后再剪</span>
-    </div>
-    <div id="script-cut-result"></div>
+    <details style="margin-top:14px">
+      <summary class="muted" style="cursor:pointer">🎬 视频清单（要逐个画面精修 → 进剪映式剪辑工具页）</summary>
+      <div id="vid-list" style="margin-top:8px"></div>
+    </details>
+    <div class="hidden" id="mat-list"></div><div class="hidden" id="mat-loading"></div>
+    <span class="hidden" id="sel-count"></span><button class="hidden" id="btn-merge-tl"></button>
+    <span class="hidden" id="mat-hint"></span><span class="hidden" id="sub-file-label"></span>
+  </div>
   </div>
 </div>
 
@@ -290,6 +272,7 @@
 <script>
 const $ = id => document.getElementById(id);
 let folders = [], currentFolder = null, materials = [], selected = new Set();
+let folderSel = new Set();   // ① 页多选的文件夹（再点一次=移出）
 
 // ---------- 视觉大模型已下线：字幕剪辑只依赖本地语音模型（faster-whisper），以下保留空实现 ----------
 let modelTimer = null, modelLoading = false;
@@ -336,10 +319,12 @@ function renderFolders() {
     d.className = "folder";
     // 点击 = 选中文件夹（高亮），不跳页；分析/批量/下一步都从当前页操作
     d.onclick = () => {
-      currentFolder = f.is_root ? "." : f.name;
-      document.querySelectorAll(".folder").forEach(x => x.style.borderColor = "");
-      d.style.borderColor = "var(--accent)";
-      $("folder-hint").textContent = "已选中：「" + f.name + "」 可提取字幕 / 标记说话人 / 导出台词JSON / 下一步选素材";
+      const key = f.is_root ? "." : f.name;
+      if (folderSel.has(key)) folderSel.delete(key); else folderSel.add(key);
+      d.style.borderColor = folderSel.has(key) ? "var(--accent)" : "";
+      $("folder-hint").textContent = folderSel.size
+        ? ("已选 " + folderSel.size + " 个文件夹：" + [...folderSel].join("、") + "（再点一次=移出）")
+        : "点选要分析的文件夹（可多选，再点一次=移出）";
     };
     d.innerHTML = `
       <div class="fname">${f.is_root ? "📁 " : "📂 "}${esc(f.name)}</div>
@@ -390,20 +375,46 @@ async function scanFolder(force, mode) {
 }
 
 // ---------- 素材 ----------
-// 前台 Tab ⇄ 后台服务：① 素材分析=analyzer:57801 ② 剪辑出片=planner:57803+executor:57802 ③ 进阶剧本=planner:57803
+// 前台 Tab ⇄ 后台服务：① 素材分析=analyzer:61801 ② 剪辑出片=planner:61803+executor:61802 ③ 进阶剧本=planner:61803
 const TABS = { analyze: "card-folders", work: "card-chat" };
+// ① 多目录分析：逐个目录提取字幕（声音→台词阶层 JSON），进度条可见
+async function analyzeSelectedFolders(force) {
+  if (!folderSel.size) { toast("先点选要分析的文件夹（可多选，再点一次=移出）"); return; }
+  if (force && !confirm("重新分析会覆盖所选目录已有台词（说话人标注会自动继承），继续？")) return;
+  const btn = $("btn-scan"); btn.disabled = true; $("btn-rescan").disabled = true;
+  const prog = $("scan-progress");
+  const all = [...folderSel];
+  let okN = 0, failN = 0;
+  try {
+    for (let i = 0; i < all.length; i++) {
+      const folder = all[i];
+      prog.innerHTML = `<span class="loading"></span>分析 ${i + 1}/${all.length}：${esc(folder)}（本地语音转写）...`;
+      const r = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder, force: !!force, mode: "asr" }) });
+      const d = await r.json();
+      if (d.error || !d.scan_id) { prog.innerHTML = "❌ " + esc(folder) + "：" + esc(d.error || "启动失败"); failN++; continue; }
+      while (true) {
+        await new Promise(res => setTimeout(res, 2000));
+        const sr = await fetch("/api/scan_status?scan_id=" + encodeURIComponent(d.scan_id)).then(x => x.json());
+        const pct = sr.total ? Math.round(sr.done / sr.total * 100) : 0;
+        prog.innerHTML = `<span class="loading"></span>分析 ${i + 1}/${all.length}：${esc(folder)} — ${sr.done}/${sr.total}（${pct}%）成功 ${sr.ok} 失败 ${sr.failed}`;
+        if (sr.finished) { (sr.failed || sr.error) ? failN++ : okN++; break; }
+      }
+    }
+    prog.innerHTML = `✅ 分析全部完成：成功 ${okN} 个目录${failN ? "，失败 " + failN + " 个" : ""}`;
+    await loadFolders();
+    refreshCutFolderSel();
+    toast(`分析完成（${okN}/${all.length} 个目录）`);
+  } catch (e) { prog.innerHTML = "❌ " + esc(e.message); }
+  btn.disabled = false; $("btn-rescan").disabled = false;
+}
 function showTab(name) {
   for (const [key, id] of Object.entries(TABS)) {
     $(id).classList.toggle("hidden", key !== name);
     $("tabbtn-" + key).classList.toggle("active", key === name);
   }
-  if (name === "work" && !materials.length) refreshMaterials();
+  if (name === "work") refreshCutFolderSel();
 }
-async function gotoMaterials() {
-  selected.clear(); materials = [];
-  await refreshMaterials();
-  showTab("work");
-}
+async function gotoMaterials() { showTab("work"); }
 function backToFolders() { showTab("analyze"); }
 async function refreshMaterials() {
   $("mat-loading").classList.remove("hidden");
@@ -1291,7 +1302,7 @@ async function subSpeakers(force) {
 }
 function renderSubLines() {
   const box = $("sub-lines"); box.innerHTML = "";
-  if (!subLines.length) box.innerHTML = '<div class="muted" style="padding:10px">还没有台词——点上面「🔊 对勾选素材提取字幕」（在 ① 也可以对整个目录批量提取）</div>';
+  if (!subLines.length) box.innerHTML = '<div class="muted" style="padding:10px">台词阶层还没加载——选上方「已分析的文件夹」点「📂 加载台词阶层」</div>';
   subLines.forEach(l => {
     const d = document.createElement("div");
     d.style.cssText = "display:flex;gap:8px;align-items:flex-start;padding:5px 10px;border-bottom:1px solid var(--border);cursor:pointer";
@@ -1308,7 +1319,7 @@ function renderSubLines() {
   $("btn-sub-cut").disabled = !has;
   $("btn-sub-jy").disabled = !has;
   $("btn-sub-srt").disabled = !has;
-  $("sub-file-label").textContent = subLines.length ? `共 ${subLines.length} 句台词` : "";
+  $("pool-count").textContent = subLines.length ? `台词阶层：${subLines.length} 句` : "未加载";
 }
 function subCheckAll(on) { subChecked.clear(); if (on) subLines.forEach(l => subChecked.add(l.i)); renderSubLines(); }
 async function keywordSelect() {
@@ -1328,6 +1339,82 @@ async function keywordSelect() {
   } catch (e) { toast("失败: " + e.message); }
   btn.disabled = false;
 }
+function refreshCutFolderSel() {
+  const sel = $("cut-folder-sel");
+  if (!sel) return;
+  const cur = sel.value;
+  const opts = folders.filter(f => f.analyzed > 0)
+    .map(f => `<option value="${esc(f.is_root ? "." : f.name)}">${esc(f.name)}（已分析 ${f.analyzed}/${f.count}）</option>`).join("");
+  sel.innerHTML = '<option value="">（选择已分析的文件夹）</option>' + opts;
+  sel.value = (cur && [...sel.options].some(o => o.value === cur)) ? cur : "";
+}
+async function loadCutFolder() {
+  const f = $("cut-folder-sel").value;
+  if (!f) { toast("先选择一个已分析的文件夹"); return; }
+  const box = $("sub-lines");
+  box.innerHTML = '<div class="muted" style="padding:10px"><span class="loading"></span>加载台词阶层...</div>';
+  subLines = []; subChecked.clear();
+  try {
+    const r = await fetch("/api/folder_lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder: f }) });
+    const d = await r.json();
+    if (d.error) { box.innerHTML = '<div class="msg err">❌ ' + esc(d.error) + '</div>'; return; }
+    (d.lines || []).forEach(l => subLines.push({ i: l.i, file: l.file, start: l.start, end: l.end, text: l.text, speaker: l.speaker || null }));
+    renderSubLines();
+    renderVidList();
+    toast(`已加载 ${subLines.length} 句台词（${d.video_count} 个视频）——说出/输入内容后点「🎯 匹配」`);
+  } catch (e) { box.innerHTML = '<div class="msg err">❌ ' + esc(e.message) + '</div>'; }
+}
+function renderVidList() {
+  const box = $("vid-list"); box.innerHTML = "";
+  const files = [...new Set(subLines.map(l => l.file))];
+  if (!files.length) { box.innerHTML = '<div class="muted" style="padding:6px">还没有台词</div>'; return; }
+  files.forEach(f => {
+    const n = subLines.filter(l => l.file === f).length;
+    const d = document.createElement("div");
+    d.className = "snip";
+    const name = document.createElement("span");
+    name.textContent = "🎬 " + f.split("/").pop() + `（${n} 句台词）`;
+    const b = document.createElement("button");
+    b.className = "btn sm"; b.textContent = "✂️ 进剪辑工具";
+    b.onclick = () => openEditFiles([f], [f.split("/").pop()]);
+    const head = document.createElement("div");
+    head.className = "snip-head";
+    head.appendChild(name); head.appendChild(b);
+    d.appendChild(head); box.appendChild(d);
+  });
+}
+// ---------- 语音对话：录音 → 本地语音模型 → 文字 → 自动匹配 ----------
+let mediaRec = null, recChunks = [], recStream = null;
+async function toggleVoice(btn) {
+  if (mediaRec && mediaRec.state === "recording") { mediaRec.stop(); return; }
+  try {
+    recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRec = new MediaRecorder(recStream);
+    recChunks = [];
+    mediaRec.ondataavailable = e => { if (e.data.size) recChunks.push(e.data); };
+    mediaRec.onstop = async () => {
+      recStream.getTracks().forEach(tk => tk.stop());
+      btn.textContent = "🎤 语音输入";
+      const blob = new Blob(recChunks, { type: mediaRec.mimeType || "audio/webm" });
+      if (blob.size < 1200) { toast("没录到声音"); return; }
+      btn.disabled = true; btn.textContent = "Recognizing...";
+      try {
+        const fd = new FormData();
+        fd.append("file", blob, "voice.webm");
+        const r = await fetch("/api/voice_input", { method: "POST", body: fd });
+        const d = await r.json();
+        if (d.error || !d.text) { toast("语音识别失败：" + (d.error || "没听清，可改用打字")); return; }
+        $("sub-query").value = d.text;
+        toast("听到：" + d.text);
+        subMatch();   // 识别成功自动匹配
+      } catch (e) { toast("失败: " + e.message); }
+      btn.disabled = false;
+    };
+    mediaRec.start();
+    btn.textContent = "⏹ 说完点此停止";
+    toast("开始录音，说完再点一次停止");
+  } catch (e) { toast("无法使用麦克风：" + e.message); }
+}
 async function subMatch() {
   const q = $("sub-query").value.trim();
   if (!q) { toast("先输入一句话说明你要什么"); return; }
@@ -1341,7 +1428,7 @@ async function subMatch() {
       subChecked.clear();
       (d.picked || []).forEach(pi => subChecked.add(pi.i));
       renderSubLines();
-      toast(`智能勾选了 ${(d.picked || []).length} 句，可在列表里手动增删后再剪`);
+      toast(`命中 ${(d.picked || []).length} 句（默认全选），可在列表里手动增删后点「剪辑」`);
     }
   } catch (e) { toast("失败: " + e.message); }
   btn.disabled = false;

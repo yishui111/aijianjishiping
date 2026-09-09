@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -2214,6 +2214,21 @@ def api_keyword_lines(req: KeywordLinesRequest):
     return {"picked": picked, "total": len(req.lines), "keywords": kws}
 
 
+@app.post("/api/voice_input")
+async def api_voice_input(file: UploadFile = File(...)):
+    """语音对话：前端录音转发给 analyzer，本地语音模型转成文字后返回。"""
+    try:
+        data = await file.read()
+        async with httpx.AsyncClient(timeout=300) as client:
+            r = await client.post(
+                f"{ANALYZER_URL}/voice_transcribe",
+                files={"file": (file.filename or "voice.webm", data, file.content_type or "audio/webm")},
+            )
+        return r.json() if r.status_code == 200 else {"error": r.text}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 def _fmt_srt_ts(sec: float) -> str:
     ms = int(round(max(0.0, sec) * 1000))
     h, ms = divmod(ms, 3_600_000)
@@ -2309,6 +2324,28 @@ def api_clip_selected(req: ClipSelectedRequest):
         order.append((f, s, e))
     if not order:
         return {"error": "没有有效的勾选场景"}
+    # 剪切工艺①：同一素材里时间连续/重叠的选区合并成一个区间（间隙≤0.5s 视为连续），
+    # 保持勾选顺序不变、不跨素材合并——避免"连续几句话被剪成多段再拼接"的接缝感。
+    relaxed: list[list] = []
+    for f, s, e in order:
+        if relaxed and relaxed[-1][0] == f and s - relaxed[-1][2] <= 0.5:
+            relaxed[-1][2] = max(relaxed[-1][2], e)
+        else:
+            relaxed.append([f, s, e])
+    # 剪切工艺②：呼吸余量——剪切点头部提前 0.15s、尾部延后 0.25s（钳制在素材时长内），
+    # 防止吃字和爆音；专业剪辑软件的默认做法。
+    durations: dict[str, float] = {}
+    for r in relaxed:
+        if r[0] not in durations:
+            try:
+                durations[r[0]] = float((media.probe(MATERIALS / r[0]) or {}).get("duration_sec") or 0)
+            except Exception:
+                durations[r[0]] = 0
+        d = durations[r[0]]
+        r[1] = max(0.0, r[1] - 0.15)
+        if d:
+            r[2] = min(d, r[2] + 0.25)
+    order = [(f, s, e) for f, s, e in relaxed]
     # 同素材多段：executor 的 trim 用原始文件，registry 自动生成 file#n，concat 引用。
     # concat 顺序必须按勾选顺序逐条生成 key（先出现的用原名，同素材后续段用 file#n），
     # 否则 A,B,A 交叉勾选会被拼成 A,A,B，破坏用户排序。

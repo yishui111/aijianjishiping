@@ -10,7 +10,7 @@ from pathlib import Path
 
 import cv2
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -445,10 +445,39 @@ _whisper = None
 _asr_cpu_only = False  # GPU 运行库缺失/显存不足被探测到后，本次进程固定走 CPU
 
 
+def _cuda_dll_dirs() -> list[Path]:
+    """收集 pip 安装的 NVIDIA 运行库目录（nvidia-cublas-cu12 / nvidia-cudnn-cu12）。"""
+    try:
+        import importlib.util
+
+        dirs: list[Path] = []
+        for pkg in ("nvidia.cublas", "nvidia.cudnn"):
+            spec = importlib.util.find_spec(pkg)
+            if not spec or not spec.submodule_search_locations:
+                continue
+            for base in spec.submodule_search_locations:
+                for cand in (Path(base) / "bin", Path(base)):
+                    if cand.is_dir() and any(cand.glob("*.dll")):
+                        dirs.append(cand)
+                        break
+        return dirs
+    except Exception:
+        return []
+
+
 def _asr_model(path: str):
     """加载 whisper 模型：按 ASR_DEVICE 配置，auto 失败自动回退 CPU。"""
     from faster_whisper import WhisperModel
     global _asr_cpu_only
+    # GPU 模式需要 cuBLAS/cuDNN 运行库：pip 安装的 nvidia 包里的 DLL 自动注册
+    dirs = _cuda_dll_dirs()
+    for d in dirs:
+        try:
+            os.add_dll_directory(str(d))
+        except Exception:
+            pass
+    if dirs:
+        os.environ["PATH"] = os.pathsep.join(str(d) for d in dirs) + os.pathsep + os.environ.get("PATH", "")
     if ASR_DEVICE in ("cpu",) or _asr_cpu_only:
         _asr_cpu_only = True
         # cpu_threads 限制转写占用的核数（默认 4），防止 CPU 满载过热
@@ -860,6 +889,42 @@ def _transcribe_only(file: str, force: bool = False) -> dict:
 def transcribe(req: AnalyzeRequest):
     """提取字幕：只跑本地语音转写，返回带时间戳的台词列表。"""
     return _transcribe_only(req.file, req.force)
+
+
+@app.post("/voice_transcribe")
+async def voice_transcribe(file: UploadFile = File(...)):
+    """语音对话输入：前端录音（webm/m4a/wav 均可）→ 本地语音模型 → 文字。
+
+    临时音频不进素材库、不生成分析文档，用完即删。
+    """
+    suffix = Path(file.filename or "voice.webm").suffix or ".webm"
+    tmp_dir = MATERIALS / "_voice_tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"voice_{int(time.time() * 1000)}{suffix}"
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(await file.read())
+        lines = _asr(tmp_path)
+        if not lines:
+            # 浏览器音频编码（webm/opus）解码不佳时：ffmpeg 转 16k 单声道再试
+            import subprocess
+
+            wav = tmp_path.with_suffix(".wav")
+            subprocess.run(
+                [media.ffmpeg(), "-y", "-v", "error", "-i", str(tmp_path),
+                 "-ar", "16000", "-ac", "1", str(wav)],
+                capture_output=True, timeout=120,
+            )
+            if wav.exists():
+                lines = _asr(wav)
+        text = "".join(sp["text"] for sp in lines).strip()
+        return {"text": text}
+    finally:
+        for pth in (tmp_path, tmp_path.with_suffix(".wav")):
+            try:
+                pth.unlink()
+            except OSError:
+                pass
 
 
 @app.post("/scan")

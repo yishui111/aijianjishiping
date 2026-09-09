@@ -735,3 +735,51 @@ AI 粗剪的定位是"选段"，精修交给专业工具。两条路：
 - ① 字幕分析：目录列表 → 提取字幕/重新提取/说话人(全目录)/台词JSON(全目录) → 下一步
 - ② 一句话剪辑：素材选择（勾选已提取字幕的素材）→ 字幕阶层列表 → 🎯 关键词全选 / 🪄 一句话智能勾选 / 📜 按剧本剪（🌐 跨视频）→ ✂️ 剪勾选的台词 → 成片/烧硬字幕/剪映草稿/SRT
 - ③ 剪辑工具页：素材卡片「🎬 剪辑」或 ✂️ 手动精剪 进入，全屏时间线
+
+### 19.3 端口再次迁移：5780x → 6180x（2026-09-07 晚）
+
+迁移到 5780x 后发现机器上仍有**外部启动脚本**（%TEMP%\start_analyzer.bat 等，非本仓库文件）按旧端口 8001-8003/11434 反复拉起本项目服务，与用户其他项目冲突。按用户要求迁到更冷门的 **61800(Ollama)/61801(analyzer)/61802(executor)/61803(planner)** 段（已验证不在 Windows 保留区间、无占用，61804/61805 留作扩展），并把 %TEMP% 里那三个外部 bat 也改写到新端口。全部服务已按用户要求停止，明天用户自行测试。
+
+## 21. 2026-09-07 界面按用户流程最终定型
+
+用户流程：**选文件夹（可多选/移出）→ 分析（生成台词 JSON，"已分析"状态按目录持久记录）→ 进入剪片（提示选"已分析的文件夹"）→ 语音/文字对话（如"我要剪出所有视频里的孙悟空"）→ 模糊匹配 → 勾选确认（默认全选）→ 剪辑**。其他功能收敛到后端休眠或独立工具页。
+
+| 改动 | 内容 |
+|---|---|
+| ① 字幕分析 | 文件夹**多选**（点击切换选中/移出，提示条显示已选列表）；「🔊 分析」对所选目录逐个提取字幕（进度逐目录可见）；已分析状态由 manifest 持久记录，重选即显示 ✅；保留 🗣 说话人（全目录）/ 📄 台词JSON |
+| ② 一句话剪辑 | 不再按素材逐个操作：选**已分析的文件夹** → 「📂 加载台词阶层」（全目录台词统一编号）→ **🎤 语音输入**（MediaRecorder 录音 → `POST /api/voice_input` → 本地语音模型转文字 → 自动匹配）或打字 → 「🎯 匹配」（模糊匹配，命中句默认全选，可增删）→ ✂️ 剪辑 → 成片/烧硬字幕/剪映草稿/SRT；底部「视频清单」可进剪辑工具页 |
+| 后端新增 | analyzer `POST /voice_transcribe`（音频上传→faster-whisper→文本，webm 不佳时 ffmpeg 转 16k wav 重试，临时文件用完即删）；planner `POST /api/voice_input`（代理） |
+| 剪辑工具页 | 保持全屏独立页不变（工具属性，非核心） |
+
+### 21.1 收尾三件套（2026-09-07 晚，全部完成）
+
+1. **相邻命中句合并**：/api/clip_selected 预处理——同素材内间隙≤0.5s 的选区合并成一个区间（保持勾选顺序、不跨素材），消除"连续几句话剪成多段再拼"的接缝；
+2. **切点呼吸余量**：合并后每区间头提前 0.15s、尾延后 0.25s（probe 素材时长钳制），防吃字/爆音；
+3. **GPU 加速**：pip 装 nvidia-cublas-cu12 + nvidia-cudnn-cu12（清华源，配 ctranslate2 4.8.1），analyzer `_cuda_dll_dirs()` 自动发现并注册 DLL；.env ASR_DEVICE=auto。实测 RTX 4080：medium 转 8s 音频 **1.2s**（CPU 模式约 11s），失败自动回退 CPU。
+
+## 22. 2026-09-09 部署 FunClip 与 AutoCut 两个开源声音剪辑工具（tools/ 目录）
+
+按用户要求把两个"根据声音剪视频"的开源项目部署进本仓库 `tools/`，各自独立 venv、独立端口、互不影响主项目（61800-61805）。
+
+### 22.1 FunClip（tools/funclip，端口 61810，阿里的"勾台词剪视频"）
+- 代码：GitHub zip 经 ghproxy 下载（git 直连被代理挡）；独立 venv + requirements.txt（清华源）
+- 模型：ModelScope 预下载 Paraformer 大模型 + FSMN-VAD + 标点 + CAM++ 说话人（约 1.4GB）
+- **本地修复 2 个上游 bug**：① `--whisper-model` choices 无本地路径 + ② 剪切区间超视频末尾时 moviepy 崩溃（`video.duration` 钳制）
+- 实测：59 秒素材 → **27 句字幕 / 转写 2.5 秒**（Paraformer rtf 0.043，比 Whisper 快得多）；关键词"钱"→ 成片 38MB
+- 脚本：`启动.bat`（探测 61810 → 起服务 → 开浏览器）/ `关闭.bat`；日志在 logs/
+
+### 22.2 AutoCut（tools/autocut，端口 61811，李沐的"删句子剪视频"）
+- 代码：GitHub zip；pip 的 autocut 包构建失败 → 直接用仓库 + `python -m autocut`
+- 依赖：torch/openai-whisper/srt/moviepy 等；**moviepy 必须 1.0.3**（2.x 移除了 editor，autocut 不兼容）；转写后端切 `--whisper-mode faster`，模型直接指向主项目的 `models/whisper`（small）/`models/whisper-medium`（medium）——零下载、全离线
+- Web 包装页（app.py，autocut 本身无界面）：选视频 → 生成字幕 → 网页上删句子 → 剪切成片 → 下载；子进程用 **DETACHED_PROCESS**（继承服务句柄会莫名卡死）+ 产物文件轮询（faster 模式进程干完活不退出，靠产物出现就 terminate）
+- `--vad 0`：VAD 依赖 torch.hub 拉 GitHub（被墙），关闭后功能可用
+- 实测：转写 57s/59s 视频（medium CPU）；md → `test_video_cut.mp4` 成片
+- 脚本：`启动.bat`（开浏览器）/ `关闭.bat`
+
+### 22.3 端口总表
+| 服务 | 端口 |
+|---|---|
+| 主项目 Ollama / analyzer / executor / planner | 61800 / 61801 / 61802 / 61803 |
+| （预留） | 61804-61809 |
+| FunClip | 61810 |
+| AutoCut Web | 61811 |
