@@ -1,0 +1,10 @@
+runtime/
+modelscope-cache/
+logs/
+__pycache__/
+*.pyc
+test-media/
+剪辑成片/
+funclip_test_out/
+outputs.json
+test_video.*

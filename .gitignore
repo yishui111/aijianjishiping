@@ -126,4 +126,4 @@ Shotcut/
 offline/
 materials/
 analysis/
-tools/
+# tools/  # 旧规则：现在 tools/subtitle-clip 是字幕剪辑工作台，需要入库
