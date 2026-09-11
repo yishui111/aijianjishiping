@@ -50,6 +50,26 @@
 - 服务端口：61810（Gradio 工作台）/ 61812（FastAPI 分析服务）；日志在 `tools/subtitle-clip/logs/`
 - 本机测试时注意：WorkBuddy 沙箱会注入 `PYTHONPATH=<...>\cli\vendor\shim`，其中 `sitecustomize.py` 把 `os.remove` 重定向到回收站，会让 `videoclipper.video_recog` 在删临时音频时抛 `OSError: SHFileOperationW 失败: 0x2`（HTTP 500）。**这是沙箱副作用，不是项目 bug**；用 `env -u PYTHONPATH` 启动服务即可复现真实行为
 
+### 关键点（2026-09-11 修 _split_long_sentence 两个 bug + 剧本剪辑实测）
+- **bug 1（影响匹配精度）**：`funclip/videoclipper.py::_split_long_sentence` 切分长句时
+  `chunk["text"] = tokens[start:idx+1]` 直接存了 `str2list` 的**字符列表**，下游
+  `api_service` 用 `str()` 写 JSON → 产出 `"['王', '呃', '几', '个', '妖', '怪', '占']"`
+  这种 Python 列表字面量。后果：关键词「妖怪」命中 **0**（字符被引号逗号隔开）、
+  剧本相似度匹配失效。**改为 `"".join(tokens[...])`**。
+  另在 `api_service` 写 JSON 处加兜底：text 若为 list/tuple 先 join。
+- **bug 2（影响剪片精度）**：切分片段用 `dict(normalized)` 继承了**父句的 start/end**，
+  同一父句切出的多片段时间区间完全相同（实测两段都是 `89.45-103.20`），
+  按台词剪辑会把同一段素材**重复剪进去**。**改为各片段用自己 timestamp 的首尾毫秒值**。
+- 触发条件：句子 duration ≥ `MAX_SUBTITLE_DURATION_MS`(8000) 或 tokens ≥ `MAX_SUBTITLE_TOKENS`(30)
+  **且** `len(tokens) == len(timestamp)`（不等则整句返回，不切分）。
+- **实测（素材\3分钟 西游记 p01-p03）**：修复前 4 条异常台词 / 2 组区间重复 / 关键词「妖怪」命中 0；
+  修复后异常 0 / 重复 0 / 「妖怪」命中 1 并成功出片。提交 `6ffcc12`。
+- **剧本自动匹配剪辑实测通过**：跨 p02/p03 两集取真实台词组 5 行剧本，
+  逐行命中各自集数（`difflib` 相似度阈值 0.45），改写句「我要打上凌霄宝殿」也模糊命中
+  p03「不然我就打上凌」；按集输出 2 个成片（p02 3.0s / p03 22.44s）。
+- ⚠️ **改完代码必须重新分析**：`/api/analyze_folder` 见 `.clip.json` 已存在就跳过（cached），
+  旧的错误 JSON 不会自动更新——需先删掉目标目录的 `*.clip.json` 再分析。
+
 ---
 ### 关键点（2026-09-02 上传整理补充）
 - 本仓库 = AI Video Studio（AI 视频智能剪辑系统），目录历史名 aijianjishiping；同目录早前的 AI 出图工作室系列（Illustrious/FLUX2/illustrious_ui/Camera/model_pad 等 ~58GB）已判定烂尾并于 2026-09 删除（仓库与磁盘同步精简）
