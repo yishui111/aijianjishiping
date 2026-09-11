@@ -1,77 +1,77 @@
-# AI Video Studio · 换电脑部署方案（DEPLOY）
+# AI 字幕剪辑工作台 · 换电脑部署方案（DEPLOY）
 
 ## 🚀 换电脑部署（保证可用）
 
-> **方式 A（推荐 · 100% 保证）**：用 U 盘 / 网盘把「原项目整份文件夹」（含 `ai-video-studio\runtime`、`models` 大件约 14GB）复制到新电脑 → 双击 `ai-video-studio\start_local.bat`。
+> **方式 A（推荐 · 100% 保证）**：用 U 盘 / 网盘把「原项目整份文件夹」（含 `tools\subtitle-clip\runtime`、`modelscope-cache` 大件约 5GB）复制到新电脑 → 双击根目录 `启动.bat`。
 >
 > **方式 B（代码装配）**：`git clone https://github.com/yishui111/aijianjishiping.git` → 补齐下列大件 → 启动。
 
-> 说明：模型/运行时体积超过 GitHub 单文件 100MB 上限，不随仓库分发；本仓库承载全部自研代码与装配指引。**方式 A 是最稳路径。**
+> 说明：运行时与模型体积超过 GitHub 单文件 100MB 上限，不随仓库分发；本仓库承载全部自研代码与装配指引。**方式 A 是最稳路径。**
 
 ---
 
 ## 1. 环境要求
 
-- Windows 10/11 64 位（原生模式）
-- 磁盘空闲 ≥ 20GB；内存 ≥ 8GB（推荐 16GB）；NVIDIA 显卡可选（无 GPU 自动回退 CPU，较慢）
-- 可选：Docker Desktop（仅 Docker 部署方式需要）
+- Windows 10/11 64 位
+- 磁盘空闲 ≥ 10GB；内存 ≥ 8GB（推荐 16GB）
+- NVIDIA 显卡可选（无 GPU 自动回退 CPU，较慢）
+- **无需单独安装 Python、ffmpeg**（`runtime\` 已含 venv 与 ffmpeg）
+- 无需 Docker
 
 ## 2. 方式 A：整目录复制（最快最稳）
 
-1. 把含大件的完整原项目文件夹拷到新电脑任意位置（保持内部结构不变）
-2. 双击 `ai-video-studio\start_local.bat`
-3. 等待服务就绪，浏览器会自动打开 <http://localhost:61803>
+1. 把完整原项目文件夹拷到新电脑任意位置（保持内部结构不变）
+2. 双击根目录 `启动.bat`
+3. 等待服务就绪（首次加载语音模型约 10-20 秒），浏览器自动打开 <http://127.0.0.1:61810>
 
 ## 3. 方式 B：git clone + 装配
 
 ```bash
 git clone https://github.com/yishui111/aijianjishiping.git
-cd aijianjishiping
+cd aijianjishiping/tools/subtitle-clip
 ```
 
 补齐（任选其一）：
-- 从已部署机器**复制** `ai-video-studio\runtime\`（Ollama 便携 + venv）与 `ai-video-studio\models\`（qwen2.5vl:3b、qwen2.5:7b、bge-m3、whisper、chinese-clip）→ 最省事；
-- 或全新下载/重建：见 `ai-video-studio\docs\implementation-plan.md`（Ollama 便携下载、`pip install` 依赖清单、各模型来源与落点、Chinese-CLIP 权重等）。
 
-## 4. 配置
+- 从已部署机器**复制**整个 `runtime\`（venv，约 1.7GB）与 `modelscope-cache\`（语音模型，约 3.3GB）→ 最省事；
+- 或全新重建：
+  ```bash
+  python -m venv runtime
+  runtime\Scripts\pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+  ```
+  首次启动会自动把 Paraformer / VAD / 标点 / 说话人模型下载到 `modelscope-cache\`（需联网，约 3.3GB）。
 
-```bash
-cd ai-video-studio
-copy .env.example .env     # Windows
-# 编辑 .env：不填任何 key 即全本地离线；填 PLANNER_API_KEY / GEN_SCRIPT_API_KEY 走线上 DeepSeek
-```
-
-⚠️ `.env` 已被 .gitignore 屏蔽，**不要提交**（内含密钥）。
-
-> 原生模式（start_local.bat）**会自动加载 `.env`**：`.env` 里的配置覆盖脚本默认值，改完重启即生效。
-> 本机跑不动视觉大模型时设 `VLM_ENABLED=false`（分析改用 CLIP 场景标注兜底，检索/自动剪辑不受影响）；
-> 缺 CUDA 运行库（报 cublas64_12.dll）时设 `ASR_DEVICE=cpu`。
-
-## 5. 启动 / 停止 / 验证
+## 4. 启动 / 停止 / 验证
 
 | 动作 | 操作 |
 | ---- | ---- |
-| 启动 | 双击 `ai-video-studio\start_local.bat`（自动拉起 Ollama + analyzer/executor/planner） |
-| 停止 | 双击 `ai-video-studio\stop_local.bat` |
-| 验证 | 打开 <http://localhost:61803>；analyzer <http://localhost:61801> |
+| 启动 | 双击根目录 `启动.bat`（内部调用 `tools\subtitle-clip\start.ps1`） |
+| 停止 | 双击根目录 `关闭.bat` |
+| 验证 | 剪辑工作台 <http://127.0.0.1:61810>；分析服务 <http://127.0.0.1:61812> |
 
-验证用例：分析一段视频 → 场记单出现场景/标签 → 勾选片段剪辑（或直接用「🤖 AI 自动剪辑」填需求+目标时长一键出片）→ `ai-video-studio\output\` 出现成片。
+验证用例（已实测通过）：
 
-## 6. 端口一览
+1. 分析服务填视频文件夹路径 → 点「分析」→ 该目录每个视频旁生成 `<视频名>.clip.json`（含台词 + 时间戳）
+2. 关键词填「钱」→ 点关键词剪辑 → 该目录 `剪辑成片\` 出现命中台词的成片
+3. 剧本框逐行填台词 → 点剧本剪辑 → 按剧本顺序剪接成片
+
+## 5. 端口一览
 
 | 端口 | 服务 |
 | ---- | ---- |
-| 61801 | analyzer（理解/分析 API） |
-| 61802 | executor（剪辑执行） |
-| 61803 | planner（对话/剧本/场记单 Web） |
-| 61800 | Ollama（本地模型） |
+| 61810 | 剪辑工作台（Gradio：识别 / 勾台词 / 时间线精修 / 烧字幕） |
+| 61812 | 分析服务（FastAPI：目录批量分析 / 关键词剪辑 / 剧本剪辑） |
 
-## 7. 常见问题排查
+## 6. 常见问题排查
 
-- **启动后 61803 打不开**：看控制台日志；确认 Ollama 已起（11434 通）。
-- **分析报模型未找到**：确认 `models\ollama\models` 与 whisper/clip 权重在位。
-- **本机跑不动视觉大模型 / 分析卡住很慢**：`.env` 设 `VLM_ENABLED=false`，分析走 CLIP 场景标注兜底（秒级），检索与 AI 自动剪辑不受影响。
-- **日志报 cublas64_12.dll / 转写失败**：`.env` 设 `ASR_DEVICE=cpu`。
-- **无 GPU 很慢**：属预期；调大 `ASR_CPU_THREADS` 或改用 GPU 机器；对话规划建议走线上 DeepSeek。
+- **双击 `启动.bat` 一闪而过 / 没反应**：说明脚本报错退出。先确认 `tools\subtitle-clip\runtime\` 与 `modelscope-cache\` 在位，再看 `tools\subtitle-clip\logs\` 下的 `studio.log.err` / `api.log.err`。
+- **61810 或 61812 打不开**：看 `logs\` 日志；确认端口没被其它程序占用。
+- **分析报模型找不到**：确认 `modelscope-cache\models\` 下四个模型目录齐全（Paraformer / VAD / 标点 / 说话人）。
+- **无 GPU 很慢**：属预期；改用 GPU 机器可显著加速。
+- **转写报 CUDA / DLL 错误**：走 CPU 模式即可（无 GPU 自动回退）。
 
-详细设计与修复记录见 `ai-video-studio\docs\implementation-plan.md`。
+## 7. 脚本维护约定
+
+- `启动.bat` / `关闭.bat`：**纯 ASCII 内容 + CRLF + 无 BOM**（避免中文在 GBK 代码页下乱码）；中文只出现在文件名里
+- `tools\subtitle-clip\start.ps1`：**含中文，必须带 UTF-8 BOM + CRLF**，否则 PowerShell 5.1 会按 GBK 解析成语法错误
+- 日志统一落 `tools\subtitle-clip\logs\`

@@ -1,38 +1,55 @@
-# AGENTS.md — AI Video Studio（aijianjishiping 仓库）项目档案
+# AGENTS.md — AI 字幕剪辑工作台（aijianjishiping 仓库）项目档案
 
 > ⚠️ 修改本仓库前先通读本文件。给「AI 助手 / 开发者」看的项目记忆：定位、结构、公开版边界、维护约定。
 
 ## 1. 定位
-本地 AI 视频智能剪辑系统（目录历史名 aijianjishiping；早前同目录的 AI 出图工作室系列已**全部废弃删除**，2026-09 清理）。仓库只含**一个自研系统**：`ai-video-studio/`。
+本地**字幕（台词时间戳）驱动**的离线视频剪辑系统。给一个视频目录 → 语音识别出台词与时间戳，同目录生成 `<视频名>.clip.json` → 按关键词/一句话/剧本精准剪出成片。
+
+> 演进史（勿再回退）：AI 出图工作室系列（~58GB）已删除；`ai-video-studio/`（画面语义选段路线）已于 commit `dc3abee` **下线删除**——实测画面语义选段不可靠。当前仓库只含**一个系统**：`tools/subtitle-clip/`。
 
 ## 2. 结构与端口
 | 组件 | 作用 |
 | ---- | ---- |
-| ai-video-studio/services/analyzer | L1 理解：场景切分/ASR/VLM 总结/向量（端口 61801） |
-| ai-video-studio/services/planner | L2 方案：对话/剧本/场记单 API + 前端（61803） |
-| ai-video-studio/services/executor | L3 执行：ffmpeg 剪辑（61802） |
-| ai-video-studio/services/common | 共享库：clip_client(Chinese-CLIP)/media/util |
-| ai-video-studio/scripts, config, docs | 构建脚本、操作目录、方案手册 |
-| ai-video-studio/start_local.bat | 原生模式一键启动（推荐，无 Docker） |
+| tools/subtitle-clip/api_service.py | 分析服务（FastAPI，**61812**）：目录批量分析 / 关键词剪辑 / 剧本剪辑 |
+| tools/subtitle-clip/funclip/launch.py | 剪辑工作台（Gradio，**61810**）：识别 / 勾台词 / 时间线精修 / 烧字幕 |
+| tools/subtitle-clip/funclip/videoclipper.py | 剪辑引擎（FunClip 二次开发，MIT） |
+| tools/subtitle-clip/start.ps1 / stop.ps1 | 真正的启停脚本 |
+| 根 `启动.bat` / `关闭.bat` | 包装脚本 → 调用上面的 ps1（纯 ASCII，防中文乱码） |
+| tools/subtitle-clip/runtime/ | venv（含 torch + ffmpeg，~1.7GB，不入库） |
+| tools/subtitle-clip/modelscope-cache/ | 语音模型缓存（~3.3GB，不入库） |
+| tools/funclip/ | 上游 FunClip 参考副本（不入库，仅本机对照） |
 
-入口 `ai-video-studio\README.md`、`ai-video-studio\docs\implementation-plan.md`（含部署手册第 14 节）。
+接口清单：`POST /api/analyze_folder`、`/api/list_jsons`、`/api/keyword_cut`、`/api/script_cut`、`GET /api/outputs`、`GET /media`。
 
 ## 3. 公开版边界（刻意不入库）
-- `ai-video-studio/runtime/`(venv+Ollama ~4.5GB)、`models/`(~9.8GB)、`offline/`、`materials/`、`output/`、`Shotcut/`、`analysis/`、`*.zip`、`*.mp4` —— 重件不入库（ai-video-studio/.gitignore 屏蔽）
-- `.env`（**含真实 sk- API Key 曾出现过**）绝不提交，只传 `.env.example`（占位 sk-xxxxxxxx）
-- `素材/`（真人视频等）仅本机使用；本机保留的根《部署方案.md》已在 .gitignore（/部署方案.md）
+- `tools/subtitle-clip/runtime/`(~1.7GB)、`modelscope-cache/`(~3.3GB)、`logs/`、`test-media/`、`outputs.json`、`__pycache__/` —— 重件不入库（subtitle-clip/.gitignore 屏蔽）
+- `tools/funclip/`（上游第三方克隆）不入库
+- `素材/`（真人视频等）仅本机使用
 - 无 `__pycache__`/pyc/日志
 
 ## 4. 特殊约定
-- 代码中 `PLANNER_API_KEY = os.environ.get(...)` 等为环境变量读取，不是真实密钥（扫描勿误报）
-- services 代码无本机盘符硬编码（均 env/相对）；修改时保持
-- bat/ps1：根目录与 avs 内启停脚本保持纯 ASCII/CRLF/无 BOM（avs 的 .ps1 可含中文提示，UTF-8）
-- clone 后跑：先按 DEPLOY.md 就位 runtime/models（方式 A 母版复制或方式 B 装配）
+- **bat/ps1 编码（踩过坑）**：根目录 `启动.bat`/`关闭.bat` 必须**纯 ASCII 内容 + CRLF + 无 BOM**（中文只放文件名）；`start.ps1`/`stop.ps1` **含中文，必须带 UTF-8 BOM + CRLF**，否则 PowerShell 5.1 按 GBK 解析成语法错误
+- 根 bat 不要写中文内容——GBK 代码页下会乱码；需要中文提示就放 `.ps1`（带 BOM）
+- `start.ps1` 会把 `MODELSCOPE_CACHE` 指向本地 `modelscope-cache\`（保证离线可整目录复制）；**传 Windows 风格路径**，POSIX 风格 `/d/...` 会被解释成 `D:\d\...` 并触发重新下载
+- `runtime/` 内已含 imageio-ffmpeg 提供的 ffmpeg，无需系统安装
+- 无本机盘符硬编码；修改时保持
+- clone 后跑：先按 DEPLOY.md 就位 `runtime/` 与 `modelscope-cache/`（方式 A 母版复制或方式 B 装配）
 
 ## 5. 维护约定
-- 改动代码后同步更新：README.md（用户向）、DEPLOY.md、本文件、avs/docs
+- 改动代码后同步更新：README.md（用户向）、DEPLOY.md、本文件
 - 提交：`git add <具体文件>` → `git commit -m "..."` → `git push origin main`（默认只有仓库主人可 push）
 - 勿用 `git add -A`（本机有大量被 ignore/exclude 的大件与个人文件，防止误提交）
+- **改动启停脚本后，务必核对根 `启动.bat` 指向的目标目录仍存在**——2026-09-11 就是因为 `ai-video-studio/` 被下线删除后根脚本没跟着改，导致双击"没反应"
+
+---
+### 关键点（2026-09-11 修复根启停脚本 + 字幕剪辑链路实测）
+- **故障**：双击根 `启动.bat` 没反应。原因：脚本仍 `call "%~dp0ai-video-studio\start_local.bat"`，而该目录已在 `dc3abee` 被删除 → `call` 失败、`echo off` 下无输出、窗口秒关
+- **修复**：根 `启动.bat`/`关闭.bat` 改为委托 `tools\subtitle-clip\start.ps1`/`stop.ps1`，并加目标缺失时的显式报错 + `pause`（不再静默退出）；内容保持纯 ASCII/CRLF/无 BOM
+- **实测（2026-09-11）**：`test-media\e2e\test_video.mp4`（59s）走完整链路——
+  目录分析 21.0s → 生成 27 条台词的 `test_video.clip.json`（`cached:false`）；关键词「钱」→ 命中 4 句 → 成片 8.75s；剧本 3 行 → 逐行匹配命中（相似度阈值 0.45）→ 成片 4.58s
+- 服务端口：61810（Gradio 工作台）/ 61812（FastAPI 分析服务）；日志在 `tools/subtitle-clip/logs/`
+- 本机测试时注意：WorkBuddy 沙箱会注入 `PYTHONPATH=<...>\cli\vendor\shim`，其中 `sitecustomize.py` 把 `os.remove` 重定向到回收站，会让 `videoclipper.video_recog` 在删临时音频时抛 `OSError: SHFileOperationW 失败: 0x2`（HTTP 500）。**这是沙箱副作用，不是项目 bug**；用 `env -u PYTHONPATH` 启动服务即可复现真实行为
+
 ---
 ### 关键点（2026-09-02 上传整理补充）
 - 本仓库 = AI Video Studio（AI 视频智能剪辑系统），目录历史名 aijianjishiping；同目录早前的 AI 出图工作室系列（Illustrious/FLUX2/illustrious_ui/Camera/model_pad 等 ~58GB）已判定烂尾并于 2026-09 删除（仓库与磁盘同步精简）

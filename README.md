@@ -1,15 +1,13 @@
 <div align="center">
 
-# 🎬 AI Video Studio — 本地 AI 视频智能剪辑系统
+# 🎬 AI 字幕剪辑工作台 — 本地离线字幕驱动剪辑系统
 
 > ⭐ **喜欢这个项目？请先点个 Star ⭐ 支持一下，让更多人看到！**
 
 ![GitHub stars](https://img.shields.io/github/stars/yishui111/aijianjishiping.svg?style=flat-square&color=orange)
 ![GitHub forks](https://img.shields.io/github/forks/yishui111/aijianjishiping.svg?style=flat-square)
 
-**本地视频素材的 AI 剪辑系统：导入素材 → AI 理解 → 对话/场记单/剧本 → 自动剪片 → 时间线精修 → 导出成片。全程本地运行，数据不出门，可选全离线。**
-
-> 仓库名 `aijianjishiping` 为历史命名（该目录早前还包含已废弃的 AI 出图工作室，现已清理删除，仅保留本系统）。
+**把视频里的声音转成带时间戳的字幕 → 按一句话/关键词/剧本精准剪出成片。全程本地离线运行，素材不出门。**
 
 </div>
 
@@ -17,39 +15,39 @@
 
 ## ✨ 项目简介
 
-把一个（或多个）视频素材文件夹交给本系统：它会先用视觉语言模型 + 语音转写 + 向量检索把素材**理解成"场记单"**（场景/人物/台词/关键帧），然后你既可以像聊天一样说"把孙悟空打斗的片段剪成 2 分钟"，也可以基于场记单勾选片段、或让它按剧本逐镜头剪辑，最后用**剪映式时间线**精修后无损导出成片。
+给系统一个**视频文件夹**，它会用本地语音大模型（Paraformer + VAD + 标点 + 说话人区分）把每个视频的台词识别出来，在**同目录生成一份台词 JSON**（谁在何时说了什么）。之后：
 
-- **自研实现**：三级流水线（理解→方案→执行）+ 时间线编辑器均为本项目自有代码
-- **本地优先**：默认用本地 Ollama 模型，素材不出本机；可选接入线上 DeepSeek 提升剧本质量
-- **原生模式**：无需 Docker（Windows 双击 `start_local.bat` 即跑），Docker 版保留可选
-- 8G 显存/CPU 均可运行（模型按需加载，分析后自动卸载释放显存）
+- 输入**一句话或关键词** → 自动找出字幕里对应的时间区间并剪出成片
+- 给一段**小剧本** → 按剧本每一句去已分析的台词 JSON 里找最相近的话，按剧本顺序剪出来
+- 也可以直接在**剪映式时间线**里手动精修、烧录硬字幕、导出 SRT
+
+> 仓库名 `aijianjishiping` 为历史命名。早前的「AI 视频智能剪辑系统 / 画面语义选段」路线已废弃下线（画面语义选段实测不可靠），现全线转向**字幕（台词时间戳）驱动**方案。
 
 ## 🎯 主要功能
 
-- 🔬 **L1 理解**：场景自动切分、语音转写、VLM 场景总结、逐镜头关键帧 + 中文 CLIP 画面向量
-- 📋 **场记单 + 双通道检索**：bge-m3 文字通道 + Chinese-CLIP 画面通道加权融合，毫秒级、确定性、不幻觉
-- 💬 **对话剪辑**：本地 7B 模型听懂自然语言指令（"保留 2-4 分钟""去静音""精彩集锦"等），规则引擎 + 工具调用双保险
-- 📝 **剧本批量剪辑**：喂场记生成镜头剧本 → 自动逐镜头匹配素材片段 → 勾选合并出片
-- ✂️ **剪映式时间线**：大预览窗 + 轨道缩略图/波形 + 播放头 + 分割/删除/撤销 + 跨素材合并 + 无损导出
-- 🎛️ **L3 执行**：ffmpeg 精确裁剪、拼接自动归一化、变速、去静音、1080p 导出
-- 🧵 长视频分段分析、CPU 线程/显存资源限制防烧机
+- **字幕识别**：本地语音大模型（Paraformer-large + FSMN-VAD + 标点恢复 + CAM++ 说话人区分），CPU/GPU 自适应
+- **目录批量分析**：给一个目录，逐个视频识别 → 每个视频旁生成 `<视频名>.clip.json`
+- **一句话 / 关键词剪辑**：关键词包含匹配，确定性时间戳，不幻觉
+- **剧本自动匹配剪辑**：剧本逐条 ↔ 台词做文本相似度匹配（阈值 0.45），按剧本顺序剪接
+- **说话人区分**：标注每句话是谁说的，可按说话人筛选
+- **自动加字幕**：识别结果直接烧录进画面，或导出 SRT
+- **手动精修**：内置剪映式时间线（分割 / 删除 / 字幕烧录）
 
 ## 🗂️ 目录结构
 
 ```
 aijianjishiping/
-├── ai-video-studio/          # 系统本体（见其 README.md）
-│   ├── services/
-│   │   ├── analyzer/         # L1 理解：场景/ASR/VLM/向量
-│   │   ├── planner/          # L2 方案：对话/剧本/场记单 API + Web 前端
-│   │   ├── executor/         # L3 执行：ffmpeg 剪辑
-│   │   └── common/           # 共享库（clip/media/util）
-│   ├── scripts/              # 构建/启动脚本
-│   ├── config/               # 操作目录（operation-catalog.json）
-│   ├── docs/                 # 实施方案与部署手册
-│   ├── start_local.bat       # 原生模式一键启动（推荐）
-│   ├── stop_local.bat
-│   └── .env.example          # 配置模板（复制为 .env 填写）
+├── 启动.bat / 关闭.bat        # 根目录一键启停（包装脚本）
+├── tools/
+│   └── subtitle-clip/         # 系统本体
+│       ├── start.ps1          # 启停脚本（真正干活的那个）
+│       ├── stop.ps1
+│       ├── api_service.py     # 分析服务（FastAPI，61812）
+│       ├── funclip/           # 剪辑工作台（Gradio，61810）+ 剪辑引擎
+│       ├── runtime/           # venv（含 torch/ffmpeg，约 1.7GB，不入库）
+│       ├── modelscope-cache/  # 语音模型缓存（约 3.3GB，不入库）
+│       ├── test-media/        # 测试素材
+│       └── logs/              # 运行日志
 ├── README.md / DEPLOY.md / AGENTS.md
 ```
 
@@ -57,33 +55,53 @@ aijianjishiping/
 
 | 方式 | 操作 | 说明 |
 | ---- | ---- | ---- |
-| **A（推荐，100%）** | U 盘/网盘把**原项目整份文件夹**（含 `ai-video-studio\runtime` + `models` 约 14GB）复制到新电脑 | 双击 `ai-video-studio\start_local.bat` 即用 |
-| **B（代码装配）** | `git clone` 本仓库 → 按 [DEPLOY.md](DEPLOY.md) 补齐大件 | 需下载/复制 runtime 与模型 |
+| **A（推荐，100%）** | U 盘/网盘把**原项目整份文件夹**（含 `tools\subtitle-clip\runtime` + `modelscope-cache` 约 5GB）复制到新电脑 | 双击 `启动.bat` 即用 |
+| **B（代码装配）** | `git clone` 本仓库 → 按 [DEPLOY.md](DEPLOY.md) 补齐大件 | 需重建 venv 与模型缓存 |
 
-详情见 [DEPLOY.md](DEPLOY.md) 与 `ai-video-studio\README.md`、`ai-video-studio\docs\implementation-plan.md`。
+启动后会自动打开两个页面：
+
+- <http://127.0.0.1:61810> —— 剪辑工作台（上传/选择视频 → 识别 → 勾台词 → 裁剪）
+- <http://127.0.0.1:61812> —— 分析服务（整个文件夹批量分析 → 台词 JSON → 关键词/剧本剪辑）
+
+关闭：双击 `关闭.bat`。
+
+## 📄 台词 JSON 格式
+
+分析完成后，每个视频**同目录**生成 `视频名.clip.json`：
+
+```json
+{
+  "video": "第1集.mp4",
+  "duration_sec": 2200.5,
+  "lines": [
+    {"start": 1.2, "end": 4.5, "text": "你当初是不是看到我爸的钱了", "speaker": "女人"}
+  ]
+}
+```
+
+后续的关键词剪辑与剧本剪辑都读这份 JSON，按时间区间精确剪出。
 
 ## 📥 大件资源（不入库，部署时获取）
 
 | 资源 | 大小 | 获取 |
 | ---- | ---- | ---- |
-| `ai-video-studio\runtime\`（venv + Ollama 便携版） | ~4.5GB | 方式 A 母版复制；或按 implementation-plan 重建 venv + 下载 Ollama |
-| `ai-video-studio\models\`（qwen2.5vl:3b / qwen2.5:7b / bge-m3 / whisper / chinese-clip） | ~9.8GB | 母版复制或按部署文档下载 |
-| ffmpeg | — | runtime 内含或系统 PATH |
+| `tools\subtitle-clip\runtime\`（venv，含 torch + ffmpeg） | ~1.7GB | 方式 A 母版复制；或 `python -m venv runtime` + `pip install -r requirements.txt` |
+| `tools\subtitle-clip\modelscope-cache\`（Paraformer/VAD/标点/说话人模型） | ~3.3GB | 母版复制；或首次启动自动下载 |
 
 ## ❓ 常见问题
 
-- **Q：双击 start_local.bat 没反应？** A：确认 `runtime\` 与 `models\` 已就位（见 DEPLOY.md 方式 A/B）。
-- **Q：想用线上模型提升效果？** A：复制 `.env.example` 为 `.env`，填 `PLANNER_API_KEY`/`GEN_SCRIPT_API_KEY`（**不要**把 .env 提交到仓库）。
-- **Q：8G 显存能跑吗？** A：可以。模型按需加载，分析完自动卸载；也可 CPU 运行（慢）。
+- **Q：双击 `启动.bat` 没反应？** A：确认 `tools\subtitle-clip\runtime\` 与 `modelscope-cache\` 已就位（见 DEPLOY.md）；若窗口一闪而过，说明脚本报错，查看 `tools\subtitle-clip\logs\` 下的日志。
+- **Q：8G 显存能跑吗？** A：可以。无 GPU 自动回退 CPU（较慢）。
+- **Q：分析很慢？** A：首次会加载语音模型（约 10-20 秒），之后常驻内存；单条视频识别速度约数倍实时。
 
 ## ⚠️ 注意事项
 
-- `.env`、`runtime/`、`models/`、素材等**不入库**（见 `.gitignore`）；真人素材请勿上传
+- `runtime/`、`modelscope-cache/`、`logs/`、`test-media/` 等**不入库**（见 `.gitignore`）；真人素材请勿上传
 - 对他人内容剪辑请注意版权与肖像权
 
 ## 📄 许可证
 
-MIT License（第三方组件 Ollama/Shotcut 等遵循其各自协议，均不随仓库分发）
+MIT License。基于开源项目 [FunClip](https://github.com/modelscope/FunClip)（MIT）二次开发，依赖 FunASR / ModelScope 生态，第三方组件遵循其各自协议。
 
 ---
 
