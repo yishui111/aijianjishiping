@@ -78,8 +78,13 @@ def _split_long_sentence(sent):
         )
         if should_split:
             chunk = dict(normalized)
-            chunk["text"] = tokens[start : idx + 1]
+            # 注意：text 必须是拼接后的字符串（曾误存 tokens 列表，
+            # 下游 str() 会写成 "['王', '呃', ...]" 导致关键词/剧本匹配失效）
+            chunk["text"] = "".join(tokens[start : idx + 1])
             chunk["timestamp"] = timestamp[start : idx + 1]
+            # 切分后各片段必须用自己时间戳的起止，否则继承父句区间会重复剪同一段
+            chunk["start"] = timestamp[start][0]
+            chunk["end"] = timestamp[idx][1]
             chunks.append(chunk)
             start = idx + 1
 
@@ -88,8 +93,10 @@ def _split_long_sentence(sent):
 
     if start < len(tokens):
         chunk = dict(normalized)
-        chunk["text"] = tokens[start:]
+        chunk["text"] = "".join(tokens[start:])
         chunk["timestamp"] = timestamp[start:]
+        chunk["start"] = timestamp[start][0]
+        chunk["end"] = timestamp[-1][1]
         chunks.append(chunk)
 
     return chunks

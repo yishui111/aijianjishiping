@@ -231,10 +231,16 @@ def api_analyze_folder(body: dict):
                 if abs(sd_start - s_start) < 0.3:
                     spk = sd_s.get("speaker") or sd_s.get("spk")
                     break
+            # text 兜底：FunASR 少数分支会把 text 给成 token 列表，
+            # 必须拼成字符串再存，否则 JSON 里出现 "['王', '呃', ...]" 这种
+            # Python 列表字面量，关键词/剧本匹配都会失效
+            raw_text = s.get("text")
+            if isinstance(raw_text, (list, tuple)):
+                raw_text = "".join(str(x) for x in raw_text)
             lines.append({
                 "start": round(s_start, 2),
                 "end": round(s_end, 2),
-                "text": str(s.get("text") or "").strip(),
+                "text": str(raw_text or "").strip(),
                 "speaker": spk,
                 # 字级时间戳（毫秒对），供剪辑引擎精确切分
                 "timestamp": s.get("timestamp") or [],
