@@ -33,6 +33,20 @@ MOSS_SEGMENT_MARKER_RE = re.compile(r"\[\d+(?:\.\d+)?\]\[S\d+\]")
 MOSS_FINAL_TIMESTAMP_RE = re.compile(r"\[\d+(?:\.\d+)?\]\s*$")
 
 
+def _write_standard_mp4(clip, path, temp_audiofile):
+    # 出片参数全部显式指定（libx264/aac/yuv420p/faststart）：
+    # 不依赖 moviepy 对扩展名的默认推断，保证各播放器兼容
+    clip.write_videofile(
+        path,
+        codec="libx264",
+        audio=True,
+        audio_codec="aac",
+        fps=getattr(clip, "fps", None) or 30,
+        temp_audiofile=temp_audiofile,
+        ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+    )
+
+
 def _is_valid_timestamp(timestamp):
     return (
         isinstance(timestamp, list)
@@ -405,7 +419,7 @@ class VideoClipper():
             else:
                 clip_video_file = clip_video_file[:-4] + '_no{}.mp4'.format(self.GLOBAL_COUNT)
                 temp_audio_file = clip_video_file[:-4] + '_tempaudio_no{}.mp4'.format(self.GLOBAL_COUNT)
-            video_clip.write_videofile(clip_video_file, audio_codec="aac", temp_audiofile=temp_audio_file)
+            _write_standard_mp4(video_clip, clip_video_file, temp_audio_file)
             self.GLOBAL_COUNT += 1
         else:
             clip_video_file = None
@@ -413,6 +427,71 @@ class VideoClipper():
             logging.warning(message)
             srt_clip = ''
         return clip_video_file, message, clip_srt
+
+    def _new_output_file(self, state, output_dir, tag):
+        """按「原视频名_tag_no{N}.mp4」生成不冲突的出片路径。"""
+        source_name, _ = os.path.splitext(os.path.split(state['video_filename'])[1])
+        if output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
+            return os.path.join(output_dir, "{}_{}_no{}.mp4".format(source_name, tag, self.GLOBAL_COUNT))
+        return source_name + "_{}_no{}.mp4".format(tag, self.GLOBAL_COUNT)
+
+    def video_burn_subtitles(self, state, font_size=32, font_color='white', output_dir=None):
+        """整片烧录字幕：不裁剪，把识别出的全部台词烧进原视频生成新片。"""
+        if not state or 'video' not in state or 'sentences' not in state:
+            return None, "请先完成识别（推荐「识别+区分说话人」）再整片加字幕。", ''
+        video = state['video']
+        sentences = state['sentences']
+        duration = float(video.duration or 0)
+        if duration <= 0:
+            return None, "无法读取视频时长，未生成文件。", ''
+        srt_text, subs, _ = generate_srt_clip(sentences, 0.0, duration)
+        if not len(subs):
+            return None, "识别结果里没有可用台词，未生成文件。", ''
+        generator = lambda txt: make_text_clip(
+            txt, font_size=font_size, color=font_color
+        )
+        subtitles = SubtitlesClip(subs, generator).set_pos(('center', 'bottom'))
+        final_clip = CompositeVideoClip([video, subtitles])
+        out_file = self._new_output_file(state, output_dir, 'subtitled')
+        temp_audio_file = out_file[:-4] + '_tempaudio_no{}.mp4'.format(self.GLOBAL_COUNT)
+        _write_standard_mp4(final_clip, out_file, temp_audio_file)
+        self.GLOBAL_COUNT += 1
+        message = "已把 {} 条字幕烧录进整片：{}".format(len(subs), out_file)
+        logging.warning(message)
+        return out_file, message, srt_text
+
+    def video_clip_per_speaker(self, state, output_dir=None):
+        """按说话人分开剪：每位说话人单独出一个成片（其全部台词区间依序拼接）。"""
+        if not state or 'video' not in state:
+            return [], "请先完成识别再按说话人剪辑。"
+        sd_sentences = state.get('sd_sentences') or []
+        if not sd_sentences:
+            return [], "本次识别未开启说话人区分：请先点「识别+区分说话人 | ASR+SD」。"
+        spk_ids = []
+        for d in sd_sentences:
+            if d.get('spk') not in spk_ids:
+                spk_ids.append(d.get('spk'))
+        files, notes = [], []
+        for spk in spk_ids:
+            ranges = proc_spk("spk{}".format(spk), sd_sentences)
+            if not ranges:
+                continue
+            clip_file, _, _ = self.video_clip(
+                "", 0, 0, state, dest_spk="spk{}".format(spk), output_dir=output_dir)
+            if not clip_file:
+                continue
+            target = re.sub(r'_no\d+\.mp4$', '_spk{}.mp4'.format(spk), clip_file)
+            os.replace(clip_file, target)
+            files.append(target)
+            notes.append("spk{}（{} 段）".format(spk, len(ranges)))
+        if not files:
+            return [], "没有剪出任何说话人成片。"
+        where = "，输出目录：{}".format(output_dir) if output_dir else ""
+        message = "共 {} 位说话人，已分别剪出：{}{}".format(
+            len(files), "、".join(notes), where)
+        logging.warning(message)
+        return files, message
 
 
 def get_parser():

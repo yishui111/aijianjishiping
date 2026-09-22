@@ -198,14 +198,35 @@ if __name__ == "__main__":
             output_dir = os.path.abspath(output_dir)
         if video_state is not None:
             clip_video_file, message, clip_srt = audio_clipper.video_clip(
-                dest_text, start_ost, end_ost, video_state, 
+                dest_text, start_ost, end_ost, video_state,
                 dest_spk=video_spk_input, output_dir=output_dir, timestamp_list=timestamp_list, add_sub=True)
             return clip_video_file, None, message, clip_srt
         if audio_state is not None:
             (sr, res_audio), message, clip_srt = audio_clipper.clip(
-                dest_text, start_ost, end_ost, audio_state, 
+                dest_text, start_ost, end_ost, audio_state,
                 dest_spk=video_spk_input, output_dir=output_dir, timestamp_list=timestamp_list, add_sub=True)
             return None, (sr, res_audio), message, clip_srt
+
+    # 新功能输出目录：不填时落到 tools/subtitle-clip/剪辑成片（.gitignore 已屏蔽）
+    WORKBENCH_OUT_DIR = os.path.normpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "剪辑成片"))
+
+    def _resolve_output_dir(output_dir):
+        output_dir = (output_dir or "").strip()
+        if output_dir:
+            return os.path.abspath(output_dir)
+        return WORKBENCH_OUT_DIR
+
+    def burn_full_video_subtitles(video_state, output_dir, font_size, font_color):
+        return audio_clipper.video_burn_subtitles(
+            video_state, font_size=font_size, font_color=font_color,
+            output_dir=_resolve_output_dir(output_dir))
+
+    def clip_per_speaker(video_state, output_dir):
+        files, message = audio_clipper.video_clip_per_speaker(
+            video_state, output_dir=_resolve_output_dir(output_dir))
+        preview = files[0] if files else None
+        return files, preview, message
     
     # gradio interface
     theme = gr.Theme.load("funclip/utils/theme.json")
@@ -292,12 +313,16 @@ if __name__ == "__main__":
                     with gr.Row():
                         video_start_ost = gr.Slider(minimum=-500, maximum=1000, value=0, step=50, label="⏪ 开始位置偏移 | Start Offset (ms)")
                         video_end_ost = gr.Slider(minimum=-500, maximum=1000, value=100, step=50, label="⏩ 结束位置偏移 | End Offset (ms)")
-                with gr.Row():
-                    font_size = gr.Slider(minimum=10, maximum=100, value=32, step=2, label="🔠 字幕字体大小 | Subtitle Font Size")
-                    font_color = gr.Radio(["black", "white", "green", "red"], label="🌈 字幕颜色 | Subtitle Color", value='white')
-                    # font = gr.Radio(["黑体", "Alibaba Sans"], label="字体 Font")
+                    with gr.Row():
+                        burn_sub_full_button = gr.Button("🎬 整片加字幕 | Burn Subtitles (Full Video)")
+                        spk_clip_button = gr.Button("👥 按说话人分开剪 | Clip per Speaker")
+                    with gr.Row():
+                        font_size = gr.Slider(minimum=10, maximum=100, value=32, step=2, label="🔠 字幕字体大小 | Subtitle Font Size")
+                        font_color = gr.Radio(["black", "white", "green", "red"], label="🌈 字幕颜色 | Subtitle Color", value='white')
+                        # font = gr.Radio(["黑体", "Alibaba Sans"], label="字体 Font")
                 video_output = gr.Video(label="裁剪结果 | Video Clipped")
                 audio_output = gr.Audio(label="裁剪结果 | Audio Clipped")
+                spk_files_output = gr.Files(label="👥 分说话人成片下载 | Per-speaker Clips (one file per speaker)", interactive=False)
                 clip_message = gr.Textbox(label="⚠️ 裁剪信息 | Clipping Log")
                 srt_clipped = gr.Textbox(label="📖 裁剪部分SRT字幕内容 | Clipped RST Subtitles")            
                 
@@ -325,17 +350,29 @@ if __name__ == "__main__":
                                    output_dir
                                    ],
                            outputs=[video_output, audio_output, clip_message, srt_clipped])
-        clip_subti_button.click(video_clip_addsub, 
-                           inputs=[video_text_input, 
-                                   video_spk_input, 
-                                   video_start_ost, 
-                                   video_end_ost, 
-                                   video_state, 
-                                   output_dir, 
-                                   font_size, 
+        clip_subti_button.click(video_clip_addsub,
+                           inputs=[video_text_input,
+                                   video_spk_input,
+                                   video_start_ost,
+                                   video_end_ost,
+                                   video_state,
+                                   output_dir,
+                                   font_size,
                                    font_color,
-                                   ], 
+                                   ],
                            outputs=[video_output, clip_message, srt_clipped])
+        burn_sub_full_button.click(burn_full_video_subtitles,
+                           inputs=[video_state,
+                                   output_dir,
+                                   font_size,
+                                   font_color,
+                                   ],
+                           outputs=[video_output, clip_message, srt_clipped])
+        spk_clip_button.click(clip_per_speaker,
+                           inputs=[video_state,
+                                   output_dir,
+                                   ],
+                           outputs=[spk_files_output, video_output, clip_message])
         llm_button.click(llm_inference,
                          inputs=[prompt_head, prompt_head2, video_srt_output, llm_model, apikey_input, video_input],
                          outputs=[llm_result])

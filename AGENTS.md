@@ -42,6 +42,15 @@
 - **改动启停脚本后，务必核对根 `启动.bat` 指向的目标目录仍存在**——2026-09-11 就是因为 `ai-video-studio/` 被下线删除后根脚本没跟着改，导致双击"没反应"
 
 ---
+### 关键点（2026-09-22 整片加字幕 + 按说话人分开剪 + 出片参数显式化）
+- **用户需求**：①视频没字幕时，识别后一键生成带字幕的完整视频（不裁剪）；②按说话人分开剪，几个人就出几个视频。此前只有「裁剪(+字幕)」（必须先匹配文本/说话人），没有这两条直达路径
+- **新方法（funclip/videoclipper.py）**：`video_burn_subtitles`（整片烧全部台词，走既有 moviepy+Pillow 合成路线——自带 imageio-ffmpeg 是 gyan essentials 构建，**无 libass/drawtext 滤镜**，别想用 ffmpeg subtitles 滤镜替代）、`video_clip_per_speaker`（遍历 sd_sentences 的 spk 去重列表，逐个走既有 `video_clip(dest_spk=...)` 后改名 `*_spk{k}.mp4`）
+- **新 UI（funclip/launch.py）**：「🎬 整片加字幕」「👥 按说话人分开剪」按钮 + `gr.Files` 多成片下载列表；两者输出目录不填时落到 `tools/subtitle-clip/剪辑成片/`（已 gitignore；此前空输出路径会把成片写进 Gradio 临时目录，重启即丢——**用户"生成的视频不见了/打不开"疑似与此有关**）
+- **出片参数显式化**：`_write_standard_mp4` 统一 codec=libx264 / audio=aac / pix_fmt=yuv420p / faststart / 显式 fps。起因：用户反馈多说话人示例剪出的成片打不开；坏文件已被 Gradio 重启清掉无法取证，用当前代码在访谈.mp4 上复现两条写盘路径均产出正常 h264+aac，故按"杜绝 moviepy 默认值意外"加固
+- **实测（访谈.mp4 123s，4 位说话人）**：分开剪 4 个成片 34.7/32.3/26.6/18.9s（各自台词段依序拼接）；整片烧字幕 53 条、123s；全部 ffprobe 验证 h264+aac+yuv420p+moov 前置，抽帧确认字幕与说话人内容正确
+- **E2E 脚本**：`scripts/e2e_speaker_burn.py <视频> <输出目录> <repro|new|recog>`（`env -u PYTHONPATH` 跑，stage=new 覆盖两个新功能）
+- 服务用 `start.ps1` 重启后新 UI 生效（Gradio 4.44.1 `/config` 已验证新组件在页）
+
 ### 关键点（2026-09-11 修复根启停脚本 + 字幕剪辑链路实测）
 - **故障**：双击根 `启动.bat` 没反应。原因：脚本仍 `call "%~dp0ai-video-studio\start_local.bat"`，而该目录已在 `dc3abee` 被删除 → `call` 失败、`echo off` 下无输出、窗口秒关
 - **修复**：根 `启动.bat`/`关闭.bat` 改为委托 `tools\subtitle-clip\start.ps1`/`stop.ps1`，并加目标缺失时的显式报错 + `pause`（不再静默退出）；内容保持纯 ASCII/CRLF/无 BOM
