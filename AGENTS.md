@@ -42,6 +42,31 @@
 - **改动启停脚本后，务必核对根 `启动.bat` 指向的目标目录仍存在**——2026-09-11 就是因为 `ai-video-studio/` 被下线删除后根脚本没跟着改，导致双击"没反应"
 
 ---
+### 关键点（2026-09-23 深夜 示例点击失效修复：弃用 gr.Examples + gradio 字体桥接补丁）
+- **用户报告**：点击示例视频无法加载到视频输入。根因有二，均与当晚业务代码无关：
+  ①**gradio 4.44.1 Dataset 前后端不一致**：`gr.Examples` 的 Dataset 点击事件，前端把索引发成
+  字符串/对象 → 后端 `dataset.py:160 raw_samples[payload]` 抛 `TypeError: list indices must be
+  integers... not str`（真实点击的 traceback 已取证）。后端用整数索引调 `/call/load_example`
+  完全正常——纯前端 payload 类型问题，无法在应用侧修
+  ②**页面挂载卡「加载中...」**：gradio 前端 JS 无条件注入 `fonts.googleapis.com` 字体样式表
+  （Index-DB1XLvMK.js 的 Ns 函数），被墙环境该请求挂起/失败阻塞挂载
+- **修复**：
+  ①`gr.Examples`（视频+音频共 3 组）整体删除 → `demo_pick` Dropdown（4 个视频示例 + 1 个音频示例）
+  + `load_demo_media(name)`：下载到 `%TEMP%/aicc_demo_media/`（带缓存）→ .wav 回 audio_input、
+  其余回 video_input。依赖 0 号 = demo_pick.change → outputs [video_input, audio_input]
+  ②`scripts/patch_gradio_fonts.py`：把 runtime 里 gradio 前端 chunk（Index-DB1XLvMK.js）的
+  fonts.googleapis URL 替换为同源 `/assets/fonts-bridge.css`（空文件，StaticFiles 直接服务）。
+  **runtime 重装/升级 gradio 后需重跑**；已在本机 runtime 应用
+- **排查教训（都是坑）**：
+  - gr.Button 的文本在 props.**value** 不是 label——用 label 探测版本会全部误判（当晚"回退验证"
+    因此全部失效，白折腾两轮重启）
+  - ZCode 沙箱里后台任务拉起的服务，任务结束会连带杀掉整个进程树（Start-Process 也逃不掉）；
+    WMI Win32_Process.Create 落在 session 0，`Start-Process -WindowStyle Hidden` 会报「拒绝访问」。
+    **可靠做法：WMI 起 cmd（带 `>> log 2>&1` 重定向），python 直接跑，绕开 GUI 依赖**
+  - IAB webview 的截图/可见画面与 evaluate 所见文档可能不同步（僵尸渲染），以截图+接口联合验证为准
+- **验证**：`/call/load_demo_media`（中文 body 需 \u 转义）→ complete 并返回 video FileData ✓；
+  配置/依赖关系逐项核对 ✓。UI 端到端点击验证因 IAB webview 僵尸状态未完成，用户侧验证即可
+
 ### 关键点（2026-09-23 下载区改造 + 对接 wenziqudong 字幕配音）
 - **用户改造需求**：原「下载识别结果(txt)/下载SRT字幕」两个文件下载位，改成**动作按钮**——
   「⬇️ 下载带字幕视频」（原片+烧全部字幕，复用 `video_burn_subtitles`）和
