@@ -7,6 +7,8 @@ import re
 import os
 import sys
 import copy
+import shutil
+import tempfile
 import librosa
 import logging
 import argparse
@@ -21,6 +23,10 @@ try:
     from .subtitle_renderer import make_text_clip
 except ImportError:
     from subtitle_renderer import make_text_clip
+try:
+    from . import tts_client
+except ImportError:
+    import tts_client
 from utils.subtitle_utils import generate_srt, generate_srt_clip, str2list
 from utils.argparse_tools import ArgumentParser, get_commandline_args
 from utils.trans_utils import pre_proc, proc, write_state, load_state, proc_spk, convert_pcm_to_float
@@ -45,6 +51,14 @@ def _write_standard_mp4(clip, path, temp_audiofile):
         temp_audiofile=temp_audiofile,
         ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
     )
+
+
+def _sent_plain_text(sent):
+    """台词转纯文本（FunClip 少数分支会把 text 存成 token 列表）。"""
+    text = sent.get("text")
+    if isinstance(text, (list, tuple)):
+        text = "".join(str(x) for x in text)
+    return str(text or "").strip()
 
 
 def _is_valid_timestamp(timestamp):
@@ -492,6 +506,66 @@ class VideoClipper():
             len(files), "、".join(notes), where)
         logging.warning(message)
         return files, message
+
+    def video_dub_subtitles(self, state, voice, output_dir=None, speed=1.0, tts_base=None):
+        """把识别台词逐句发给文字驱动 TTS，按原时间戳拼成整条音轨替换原声。
+
+        画面不动，只换声音；某句合成失败则跳过并在日志里计数。
+        """
+        if not state or 'video' not in state or 'sentences' not in state:
+            return None, "请先完成视频识别再配音。"
+        if not voice or not str(voice).strip():
+            return None, "请先选择或填写配音角色。"
+        voice = str(voice).strip()
+        err = tts_client.check_ready(tts_base)
+        if err:
+            return None, err
+        video = state['video']
+        duration = float(video.duration or 0)
+        if duration <= 0:
+            return None, "无法读取视频时长，未生成文件。"
+        work = []
+        for sent in state['sentences']:
+            text = _sent_plain_text(sent)
+            ts = sent.get('timestamp')
+            if not text or not _is_valid_timestamp(ts):
+                continue
+            work.append((ts[0][0] / 1000.0, text))
+        if not work:
+            return None, "识别结果里没有可用台词，无法配音。"
+        tmp_dir = tempfile.mkdtemp(prefix="dub_tts_")
+        try:
+            audio_clips = []
+            failed = 0
+            for i, (start_sec, text) in enumerate(work):
+                try:
+                    audio_bytes = tts_client.speech(voice, text, speed=speed, base=tts_base)
+                except tts_client.TTSError as e:
+                    if not audio_clips:
+                        return None, "第 {} 句配音失败，已中止：{}".format(i + 1, e)
+                    failed += 1
+                    logging.warning("第 {} 句配音失败（跳过）：{}".format(i + 1, e))
+                    continue
+                line_file = os.path.join(tmp_dir, "line_{:04d}.mp3".format(i))
+                with open(line_file, "wb") as f:
+                    f.write(audio_bytes)
+                start_clamped = min(max(0.0, start_sec), max(0.0, duration - 0.05))
+                audio_clips.append(AudioFileClip(line_file).set_start(start_clamped))
+            if not audio_clips:
+                return None, "所有台词配音均失败，未生成文件。"
+            new_audio = CompositeAudioClip(audio_clips).set_duration(duration)
+            final_clip = video.set_audio(new_audio)
+            out_file = self._new_output_file(state, output_dir, 'dubbed')
+            temp_audio_file = out_file[:-4] + '_tempaudio_no{}.mp4'.format(self.GLOBAL_COUNT)
+            _write_standard_mp4(final_clip, out_file, temp_audio_file)
+            self.GLOBAL_COUNT += 1
+            suffix = "（失败 {} 句已跳过）".format(failed) if failed else ""
+            message = "已用角色「{}」为 {} 句台词配音并替换原声{}：{}".format(
+                voice, len(audio_clips), suffix, out_file)
+            logging.warning(message)
+            return out_file, message
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def get_parser():

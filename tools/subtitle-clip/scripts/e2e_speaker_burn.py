@@ -107,6 +107,69 @@ def main():
         probe(f)
         return
 
+    if stage == "dub":
+        # 真服务：TTS_API_BASE 未设时走默认 127.0.0.1:18062；角色用 TTS_VOICE 指定
+        voice = os.environ.get("TTS_VOICE", "azhong")
+        f, msg = clipper.video_dub_subtitles(
+            state, voice=voice, speed=1.0, output_dir=str(outdir),
+            tts_base=os.environ.get("TTS_API_BASE"))
+        print(f"[dub] {msg}")
+        if f:
+            probe(f)
+        return
+
+    if stage == "dubstub":
+        # 离线链路验证：进程内起一个假 TTS 服务（固定 1 秒正弦 mp3），打满全部台词
+        import threading
+        import subprocess
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import imageio_ffmpeg
+        import json as _json
+
+        tone = os.path.join(outdir, "_stub_tone.mp3")
+        subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=1", "-b:a", "64k",
+                        "-y", tone], check=True)
+        tone_bytes = open(tone, "rb").read()
+
+        class StubTTS(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _json(self, obj, code=200):
+                body = _json.dumps(obj).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path == "/health":
+                    self._json({"status": "ok", "ready_roles": ["stub"]})
+                elif self.path == "/models":
+                    self._json({"models": [{"name": "stub", "ready": True}]})
+                else:
+                    self._json({"detail": "not found"}, 404)
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(n)
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Content-Length", str(len(tone_bytes)))
+                self.end_headers()
+                self.wfile.write(tone_bytes)
+
+        srv = HTTPServer(("127.0.0.1", 18099), StubTTS)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        f, msg = clipper.video_dub_subtitles(
+            state, voice="stub", speed=1.0, output_dir=str(outdir),
+            tts_base="http://127.0.0.1:18099")
+        print(f"[dubstub] {msg}")
+        if f:
+            probe(f)
+        return
+
     print(f"unknown stage: {stage}")
     sys.exit(1)
 

@@ -7,11 +7,10 @@ from http import server
 import os
 import logging
 import argparse
-import tempfile
-from datetime import datetime
 import gradio as gr
 from funasr import AutoModel
 from videoclipper import VideoClipper
+import tts_client
 from model_selection import create_asr_model as _create_asr_model
 from llm.openai_api import openai_call
 from llm.qwen_api import call_qwen_model
@@ -54,23 +53,6 @@ if __name__ == "__main__":
     audio_clipper = VideoClipper(funasr_model)
     audio_clipper.lang = args.lang
     
-    def save_text_to_file(content, extension, output_dir=None):
-        if not content:
-            return None
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"result_{timestamp}.{extension}"
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-            file_path = os.path.join(output_dir, filename)
-        else:
-            # Create a temporary file
-            temp_dir = tempfile.gettempdir()
-            file_path = os.path.join(temp_dir, filename)
-            
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return file_path
-
     def audio_recog(audio_input, sd_switch, hotwords, output_dir):
         return audio_clipper.recog(audio_input, sd_switch, None, hotwords, output_dir=output_dir)
 
@@ -92,16 +74,12 @@ if __name__ == "__main__":
         if video_input is not None:
             res_text, res_srt, video_state = video_recog(
                 video_input, 'No', hotwords, output_dir=output_dir)
-            text_file = save_text_to_file(res_text, 'txt', output_dir)
-            srt_file = save_text_to_file(res_srt, 'srt', output_dir)
-            return res_text, res_srt, video_state, None, text_file, srt_file
+            return res_text, res_srt, video_state, None, None, None
         if audio_input is not None:
             res_text, res_srt, audio_state = audio_recog(
                 audio_input, 'No', hotwords, output_dir=output_dir)
-            text_file = save_text_to_file(res_text, 'txt', output_dir)
-            srt_file = save_text_to_file(res_srt, 'srt', output_dir)
-            return res_text, res_srt, None, audio_state, text_file, srt_file
-    
+            return res_text, res_srt, None, audio_state, None, None
+
     def mix_recog_speaker(video_input, audio_input, hotwords, output_dir):
         output_dir = output_dir.strip()
         if not len(output_dir):
@@ -112,15 +90,11 @@ if __name__ == "__main__":
         if video_input is not None:
             res_text, res_srt, video_state = video_recog(
                 video_input, 'Yes', hotwords, output_dir=output_dir)
-            text_file = save_text_to_file(res_text, 'txt', output_dir)
-            srt_file = save_text_to_file(res_srt, 'srt', output_dir)
-            return res_text, res_srt, video_state, None, text_file, srt_file
+            return res_text, res_srt, video_state, None, None, None
         if audio_input is not None:
             res_text, res_srt, audio_state = audio_recog(
                 audio_input, 'Yes', hotwords, output_dir=output_dir)
-            text_file = save_text_to_file(res_text, 'txt', output_dir)
-            srt_file = save_text_to_file(res_srt, 'srt', output_dir)
-            return res_text, res_srt, None, audio_state, text_file, srt_file
+            return res_text, res_srt, None, audio_state, None, None
     
     def mix_clip(dest_text, video_spk_input, start_ost, end_ost, video_state, audio_state, output_dir):
         output_dir = output_dir.strip()
@@ -218,15 +192,41 @@ if __name__ == "__main__":
         return WORKBENCH_OUT_DIR
 
     def burn_full_video_subtitles(video_state, output_dir, font_size, font_color):
-        return audio_clipper.video_burn_subtitles(
+        clip_file, message, clip_srt = audio_clipper.video_burn_subtitles(
             video_state, font_size=font_size, font_color=font_color,
             output_dir=_resolve_output_dir(output_dir))
+        return clip_file, message, clip_srt, clip_file
 
     def clip_per_speaker(video_state, output_dir):
         files, message = audio_clipper.video_clip_per_speaker(
             video_state, output_dir=_resolve_output_dir(output_dir))
         preview = files[0] if files else None
         return files, preview, message
+
+    def download_subtitled_video(video_state, output_dir, font_size, font_color):
+        clip_file, message, _ = audio_clipper.video_burn_subtitles(
+            video_state, font_size=font_size, font_color=font_color,
+            output_dir=_resolve_output_dir(output_dir))
+        return clip_file, message
+
+    def download_per_speaker_clips(video_state, output_dir):
+        files, message = audio_clipper.video_clip_per_speaker(
+            video_state, output_dir=_resolve_output_dir(output_dir))
+        return files, message
+
+    def refresh_dub_voices():
+        roles, err = tts_client.list_ready_roles()
+        if err:
+            return gr.update(choices=[]), err
+        if not roles:
+            return gr.update(choices=[]), "语音服务没有就绪角色（把音色模型放入 wenziqudong 的 models 目录后重试）"
+        return gr.update(choices=roles, value=roles[0]), "可用配音角色：" + "、".join(roles)
+
+    def dub_video_from_subtitles(video_state, voice_id, dub_speed, output_dir):
+        clip_file, message = audio_clipper.video_dub_subtitles(
+            video_state, voice=voice_id, speed=float(dub_speed or 1.0),
+            output_dir=_resolve_output_dir(output_dir))
+        return clip_file, message
     
     # gradio interface
     theme = gr.Theme.load("funclip/utils/theme.json")
@@ -264,8 +264,16 @@ if __name__ == "__main__":
                 video_text_output = gr.Textbox(label="✏️ 识别结果 | Recognition Result")
                 video_srt_output = gr.Textbox(label="📖 SRT字幕内容 | RST Subtitles")
                 with gr.Row():
-                    video_text_file = gr.File(label="⬇️ 下载识别结果 | Download Recognition Result", interactive=False)
-                    video_srt_file = gr.File(label="⬇️ 下载SRT字幕 | Download SRT Subtitles", interactive=False)
+                    dl_subtitled_button = gr.Button("⬇️ 下载带字幕视频 | Download Subtitled Video")
+                    dl_spk_clips_button = gr.Button("⬇️ 下载分说话人片段 | Download Per-speaker Clips")
+                with gr.Row():
+                    dl_subtitled_file = gr.File(label="🎬 带字幕视频（原片+烧录字幕） | Subtitled Video", interactive=False)
+                    dl_spk_files = gr.Files(label="👥 分说话人片段（每人一个） | Per-speaker Clips", interactive=False)
+                with gr.Row():
+                    voice_refresh_button = gr.Button("🔄 刷新配音角色 | Refresh Dub Voices")
+                    voice_dropdown = gr.Dropdown(label="🗣 配音角色 | Dub Voice（文字驱动）", choices=[], allow_custom_value=True)
+                    dub_speed = gr.Slider(minimum=0.6, maximum=1.65, value=1.0, step=0.05, label="🗣 配音语速 | Dub Speed")
+                dub_button = gr.Button("🗣 字幕配音替换原声 | Dub Video from Subtitles", variant="primary")
             with gr.Column():
                 with gr.Tab("🧠 LLM智能裁剪 | LLM Clipping"):
                     with gr.Column():
@@ -322,24 +330,23 @@ if __name__ == "__main__":
                         # font = gr.Radio(["黑体", "Alibaba Sans"], label="字体 Font")
                 video_output = gr.Video(label="裁剪结果 | Video Clipped")
                 audio_output = gr.Audio(label="裁剪结果 | Audio Clipped")
-                spk_files_output = gr.Files(label="👥 分说话人成片下载 | Per-speaker Clips (one file per speaker)", interactive=False)
                 clip_message = gr.Textbox(label="⚠️ 裁剪信息 | Clipping Log")
                 srt_clipped = gr.Textbox(label="📖 裁剪部分SRT字幕内容 | Clipped RST Subtitles")            
                 
-        recog_button.click(mix_recog, 
-                            inputs=[video_input, 
-                                    audio_input, 
-                                    hotwords_input, 
+        recog_button.click(mix_recog,
+                            inputs=[video_input,
+                                    audio_input,
+                                    hotwords_input,
                                     output_dir,
-                                    ], 
-                            outputs=[video_text_output, video_srt_output, video_state, audio_state, video_text_file, video_srt_file])
-        recog_button2.click(mix_recog_speaker, 
-                            inputs=[video_input, 
-                                    audio_input, 
-                                    hotwords_input, 
+                                    ],
+                            outputs=[video_text_output, video_srt_output, video_state, audio_state, dl_subtitled_file, dl_spk_files])
+        recog_button2.click(mix_recog_speaker,
+                            inputs=[video_input,
+                                    audio_input,
+                                    hotwords_input,
                                     output_dir,
-                                    ], 
-                            outputs=[video_text_output, video_srt_output, video_state, audio_state, video_text_file, video_srt_file])
+                                    ],
+                            outputs=[video_text_output, video_srt_output, video_state, audio_state, dl_subtitled_file, dl_spk_files])
         clip_button.click(mix_clip, 
                            inputs=[video_text_input, 
                                    video_spk_input, 
@@ -367,12 +374,34 @@ if __name__ == "__main__":
                                    font_size,
                                    font_color,
                                    ],
-                           outputs=[video_output, clip_message, srt_clipped])
+                           outputs=[video_output, clip_message, srt_clipped, dl_subtitled_file])
         spk_clip_button.click(clip_per_speaker,
                            inputs=[video_state,
                                    output_dir,
                                    ],
-                           outputs=[spk_files_output, video_output, clip_message])
+                           outputs=[dl_spk_files, video_output, clip_message])
+        dl_subtitled_button.click(download_subtitled_video,
+                           inputs=[video_state,
+                                   output_dir,
+                                   font_size,
+                                   font_color,
+                                   ],
+                           outputs=[dl_subtitled_file, clip_message])
+        dl_spk_clips_button.click(download_per_speaker_clips,
+                           inputs=[video_state,
+                                   output_dir,
+                                   ],
+                           outputs=[dl_spk_files, clip_message])
+        voice_refresh_button.click(refresh_dub_voices,
+                           inputs=[],
+                           outputs=[voice_dropdown, clip_message])
+        dub_button.click(dub_video_from_subtitles,
+                           inputs=[video_state,
+                                   voice_dropdown,
+                                   dub_speed,
+                                   output_dir,
+                                   ],
+                           outputs=[video_output, clip_message])
         llm_button.click(llm_inference,
                          inputs=[prompt_head, prompt_head2, video_srt_output, llm_model, apikey_input, video_input],
                          outputs=[llm_result])

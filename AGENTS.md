@@ -42,6 +42,31 @@
 - **改动启停脚本后，务必核对根 `启动.bat` 指向的目标目录仍存在**——2026-09-11 就是因为 `ai-video-studio/` 被下线删除后根脚本没跟着改，导致双击"没反应"
 
 ---
+### 关键点（2026-09-23 下载区改造 + 对接 wenziqudong 字幕配音）
+- **用户改造需求**：原「下载识别结果(txt)/下载SRT字幕」两个文件下载位，改成**动作按钮**——
+  「⬇️ 下载带字幕视频」（原片+烧全部字幕，复用 `video_burn_subtitles`）和
+  「⬇️ 下载分说话人片段」（复用 `video_clip_per_speaker`，每人一个文件）。识别成功时这两个下载位会被清空
+  （新识别使旧成片失效）；右侧页签的「整片加字幕/按说话人分开剪」保留，且产物流进同一对下载位
+- **对接 wenziqudong（D:\xm\wenziqudong，文字变声音，GPT-SoVITS）**：接口见其 `接口文档.md`——
+  `GET /health`（status=ok 才算就绪，首次加载 5~10 分钟）、`GET /models`（只用 ready=true 的 name）、
+  `POST /v1/audio/speech` `{voice,input,speed}` → **音频二进制 mp3**（错误才是 JSON `{detail}`）；
+  端口固定 18062 绝不漂移，地址可用环境变量 `TTS_API_BASE` 覆盖；配音超时须 ≥300s，偶发 500 重试一次，
+  单次 ≤1000 字；**服务绝不自动启动/重启**（其项目约定），没起就提示用户双击其 start.bat
+- **新文件**：`funclip/tts_client.py`（三接口客户端 + TTSError）；`videoclipper.video_dub_subtitles`——
+  台词逐句合成 → moviepy `AudioFileClip.set_start(原句首字时间)` → `CompositeAudioClip` 叠加（重叠句相加混合）
+  → `set_duration(视频时长)` 截断 → `set_audio` 换声，画面不动；第 1 句失败即中止（多半是角色/服务问题），
+  后续失败跳过计数；临时 mp3 放 mkdtemp 目录，finally 里 rmtree
+- **UI**：识别区下方新增「🔄 刷新配音角色」（拉 /models 填充 Dropdown，allow_custom_value 可手填）+ 语速滑条
+  （0.6~1.65，对齐原时间戳全靠它微调）+「🗣 字幕配音替换原声」；产物同样落到 剪辑成片/
+- **实测（2026-09-23）**：`scripts/e2e_speaker_burn.py <视频> <输出目录> dubstub`（进程内假 TTS 服务，
+  固定 1 秒正弦 mp3）→ 53 句全部合成，成片 123.0s h264+aac，volumedetect 确认音轨非静音；真服务联调
+  `dub` 阶段（TTS_VOICE=azhong）→ 50/53 句成功替换原声，3 句服务端偶发 500 重试后仍败按设计跳过，
+  成片 123.0s h264+aac、画面帧不变；`refresh_dub_voices` 经 Gradio /call 实测返回全部就绪角色
+- **沙箱启动坑**：从 ZCode 会话里 `bash &` 拉起的进程树会被连坐回收（TTS 服务曾就绪后被杀）；
+  `Start-Process` 分离启动可跨调用存活；WMI `Win32_Process.Create` 落在 session 0，start.ps1 的
+  `Start-Process -WindowStyle Hidden` 会报「拒绝访问」——工作台用本会话跑 start.ps1 即可
+- **删代码**：launch.py 的 `save_text_to_file` 与 txt/srt 下载位随之移除（SRT 文本仍在「SRT字幕内容」文本框可见）
+
 ### 关键点（2026-09-22 整片加字幕 + 按说话人分开剪 + 出片参数显式化）
 - **用户需求**：①视频没字幕时，识别后一键生成带字幕的完整视频（不裁剪）；②按说话人分开剪，几个人就出几个视频。此前只有「裁剪(+字幕)」（必须先匹配文本/说话人），没有这两条直达路径
 - **新方法（funclip/videoclipper.py）**：`video_burn_subtitles`（整片烧全部台词，走既有 moviepy+Pillow 合成路线——自带 imageio-ffmpeg 是 gyan essentials 构建，**无 libass/drawtext 滤镜**，别想用 ffmpeg subtitles 滤镜替代）、`video_clip_per_speaker`（遍历 sd_sentences 的 spk 去重列表，逐个走既有 `video_clip(dest_spk=...)` 后改名 `*_spk{k}.mp4`）
