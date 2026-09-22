@@ -7,6 +7,8 @@ from http import server
 import os
 import logging
 import argparse
+import tempfile
+import urllib.parse
 import gradio as gr
 from funasr import AutoModel
 from videoclipper import VideoClipper
@@ -96,6 +98,35 @@ if __name__ == "__main__":
                 audio_input, 'Yes', hotwords, output_dir=output_dir)
             return res_text, res_srt, None, audio_state, None, None
     
+    # 示例视频：不用 gr.Examples（其 Dataset 组件在 4.44 前后端间传索引类型不一致，
+    # 点击会 500），改为下拉选择 + 自研加载函数，带本地缓存
+    DEMO_MEDIA = [
+        ("为什么要多读书（片段）", "https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ClipVideo/%E4%B8%BA%E4%BB%80%E4%B9%88%E8%A6%81%E5%A4%9A%E8%AF%BB%E4%B9%A6%EF%BC%9F%E8%BF%99%E6%98%AF%E6%88%91%E5%90%AC%E8%BF%87%E6%9C%80%E5%A5%BD%E7%9A%84%E7%AD%94%E6%A1%88-%E7%89%87%E6%AE%B5.mp4"),
+        ("2022云栖大会（片段2）", "https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ClipVideo/2022%E4%BA%91%E6%A0%96%E5%A4%A7%E4%BC%9A_%E7%89%87%E6%AE%B52.mp4"),
+        ("使用chatgpt（片段）", "https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ClipVideo/%E4%BD%BF%E7%94%A8chatgpt_%E7%89%87%E6%AE%B5.mp4"),
+        ("访谈（多说话人示例）", "https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ClipVideo/%E8%AE%BF%E8%B0%88.mp4"),
+        ("示例音频（鲁肃采访片段）", "https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ClipVideo/%E9%B2%81%E8%82%83%E9%87%87%E8%AE%BF%E7%89%87%E6%AE%B51.wav"),
+    ]
+    DEMO_LOOKUP = dict(DEMO_MEDIA)
+
+    def load_demo_media(name):
+        url = DEMO_LOOKUP.get(name)
+        if not url:
+            return None, None
+        cache_dir = os.path.join(tempfile.gettempdir(), "aicc_demo_media")
+        os.makedirs(cache_dir, exist_ok=True)
+        local_path = os.path.join(cache_dir, urllib.parse.unquote(url.rsplit("/", 1)[-1]))
+        if not os.path.exists(local_path):
+            import requests
+            logging.warning("下载示例媒体：%s", url)
+            r = requests.get(url, timeout=600)
+            r.raise_for_status()
+            with open(local_path, "wb") as f:
+                f.write(r.content)
+        if local_path.lower().endswith((".wav", ".mp3", ".flac", ".m4a")):
+            return None, local_path
+        return local_path, None
+
     def mix_clip(dest_text, video_spk_input, start_ost, end_ost, video_state, audio_state, output_dir):
         output_dir = output_dir.strip()
         if not len(output_dir):
@@ -242,17 +273,11 @@ if __name__ == "__main__":
                     video_input = gr.Video(label="视频输入 | Video Input")
                     audio_input = gr.Audio(label="音频输入 | Audio Input")
                 with gr.Column():
-                    gr.Examples(['https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ClipVideo/%E4%B8%BA%E4%BB%80%E4%B9%88%E8%A6%81%E5%A4%9A%E8%AF%BB%E4%B9%A6%EF%BC%9F%E8%BF%99%E6%98%AF%E6%88%91%E5%90%AC%E8%BF%87%E6%9C%80%E5%A5%BD%E7%9A%84%E7%AD%94%E6%A1%88-%E7%89%87%E6%AE%B5.mp4', 
-                                 'https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ClipVideo/2022%E4%BA%91%E6%A0%96%E5%A4%A7%E4%BC%9A_%E7%89%87%E6%AE%B52.mp4', 
-                                 'https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ClipVideo/%E4%BD%BF%E7%94%A8chatgpt_%E7%89%87%E6%AE%B5.mp4'],
-                                [video_input],
-                                label='示例视频 | Demo Video')
-                    gr.Examples(['https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ClipVideo/%E8%AE%BF%E8%B0%88.mp4'],
-                                [video_input],
-                                label='多说话人示例视频 | Multi-speaker Demo Video')
-                    gr.Examples(['https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ClipVideo/%E9%B2%81%E8%82%83%E9%87%87%E8%AE%BF%E7%89%87%E6%AE%B51.wav'],
-                                [audio_input],
-                                label="示例音频 | Demo Audio")
+                    demo_pick = gr.Dropdown(
+                        choices=[name for name, _ in DEMO_MEDIA],
+                        label="🎬 示例视频/音频 | Demo（选中即自动加载到对应输入）",
+                        info="多说话人示例请配合「识别+区分说话人」使用",
+                        value=None)
                     with gr.Column():
                         # with gr.Row():
                             # video_sd_switch = gr.Radio(["No", "Yes"], label="👥区分说话人 Get Speakers", value='No')
@@ -333,6 +358,9 @@ if __name__ == "__main__":
                 clip_message = gr.Textbox(label="⚠️ 裁剪信息 | Clipping Log")
                 srt_clipped = gr.Textbox(label="📖 裁剪部分SRT字幕内容 | Clipped RST Subtitles")            
                 
+        demo_pick.change(load_demo_media,
+                         inputs=[demo_pick],
+                         outputs=[video_input, audio_input])
         recog_button.click(mix_recog,
                             inputs=[video_input,
                                     audio_input,
