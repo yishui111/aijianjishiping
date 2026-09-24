@@ -42,6 +42,45 @@
 - **改动启停脚本后，务必核对根 `启动.bat` 指向的目标目录仍存在**——2026-09-11 就是因为 `ai-video-studio/` 被下线删除后根脚本没跟着改，导致双击"没反应"
 
 ---
+### 关键点（2026-09-24 恢复原版 + 新页面开发约定【最高优先级，先读这段再动手】）
+- **用户决定（见仓库根 `修改意见.txt`）**：2026-09-23 深夜的「识别即时反馈」改造（commit 95527ab）
+  被用户否定——原话「改回去吧，现在完全不能用；后端服务不要动；它原有的功能是正常的，我们是做
+  功能的增加和扩展」。已执行 `git reset --hard origin/main`（=86e1b06），本地与远程完全一致；
+  95527ab 只在 reflog 里可考古。**原页面/原服务从此冻结。**
+- **三条铁律（后续所有会话必须遵守）**：
+  ①**服务不变**：`funclip/launch.py`(61810)、`api_service.py`(61812)、`funclip/videoclipper.py`
+  及原页面 UI 一律不改，发现问题先报告；
+  ②**新页面开发**：一切新功能/体验改进都做成**独立新文件**（新页面/新服务），调用原有服务拿能力，
+  绝不把逻辑塞回原文件；
+  ③**对应关系**：新页面能力与原有服务一一对应（映射见下），不另起炉灶重写识别/剪辑引擎。
+- **原有服务能力 ↔ 调用面映射（新页面的合法调用清单）**：
+  - `61812 REST`：POST `/api/analyze_folder`（目录批量识别→旁挂 `*.clip.json`）、`/api/list_jsons`、
+    `/api/keyword_cut`（关键词剪）、`/api/script_cut`（剧本剪）、GET `/api/outputs`、GET `/media?f=`
+  - `61810 Gradio queue`（POST /queue/join + GET /queue/data SSE，State 由服务端按 session_hash 保持；
+    config 里 api_name **不带斜杠**）：`mix_recog`（识别）、`mix_recog_speaker`（分说话人识别）、
+    `mix_clip`（按台词/说话人/时间段偏移剪）、`video_clip_addsub`（剪+烧字幕）、
+    `burn_full_video_subtitles`（整片加字幕）、`clip_per_speaker`（按说话人分开剪）、
+    `download_subtitled_video`、`download_per_speaker_clips`、`load_demo_media`（示例）、
+    `refresh_dub_voices`+`dub_video_from_subtitles`（依赖 18062 TTS）、`llm_inference`/`AI_clip`（需 key）
+  - 若新页面需要更干净的 REST（整片字幕/分说话人/配音目前无 REST 端点）：**新建独立适配服务**
+    （新端口如 61814）包 videoclipper 引擎，不改 api_service.py
+- **原版回归基线（2026-09-24 实测 15/15）**：61812 六项接口全 PASS（p03 全新识别 20.2s、关键词/剧本
+  剪出片）；61810 工作台九链路全 PASS（识别 12.6s/分说话人识别/裁剪/裁剪+字幕/整片字幕/分说话人剪
+  （p01 剪出 4 个说话人成片）/示例加载/下载带字幕视频/配音角色优雅降级，产物 h264+aac）。
+  **唯一已知边界（原版继承 FunClip 的缺口，按铁律①不改原码）**：识别数据里若出现**空 timestamp 的句子**
+  （p03 实测踩中），「按说话人分开剪」会在 `subtitle_utils.py:33 Text2SRT.__init__` IndexError
+  （`generate_srt` 有空时间戳保护、`generate_srt_clip` 没有）；数据相关个例，常规视频（p01/访谈）正常。
+  新页面若要规避：识别后先过滤空 timestamp 句再进入剪辑调用（在适配服务里做，不改原码）。
+  **回归脚本模式**：必须先 `POST /upload` 把视频传进缓存再引用其返回路径（直接给缓存外路径会在
+  preprocess 的 move_files_to_cache 处炸掉，且连锁导致 State 缺失、后续全部报
+  state['recog_res_raw'] None——别误判成服务坏了）；gr.Video 入参须包成
+  `{"video": FileData, "subtitle": null}`、其返回值同样包在 `{"video": {...}}` 里；
+  /config 的 api_name **不带斜杠**；零输入事件（refresh_dub_voices）可直接调用。
+- **服务存活运维（昨夜结论中仍成立部分）**：AI 会话里拉起的服务活不过会话（WMI
+  `Win32_Process.Create` 实测 ~75s 被收割，「WMI 可靠」结论作废）；**长期存活只能用户自己双击
+  `启动.bat`**。排查三板斧：端口监听、`logs/*.log(.err)` 尾部、`%TEMP%\gradio` 新上传。
+  原页面「识别过程无进度提示」的体验问题依旧存在——按铁律②改进做进新页面，不再动原页面。
+
 ### 关键点（2026-09-23 深夜 示例点击失效修复：弃用 gr.Examples + gradio 字体桥接补丁）
 - **用户报告**：点击示例视频无法加载到视频输入。根因有二，均与当晚业务代码无关：
   ①**gradio 4.44.1 Dataset 前后端不一致**：`gr.Examples` 的 Dataset 点击事件，前端把索引发成
