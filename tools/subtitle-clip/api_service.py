@@ -194,6 +194,12 @@ def index():
     return PAGE.replace("__LAST__", "")
 
 
+@app.get("/health")
+def health():
+    """存活探测（模型懒加载，/health 不触发加载）。"""
+    return {"ok": True, "status": "ok", "service": "subtitle-clip-api", "port": 61812}
+
+
 @app.post("/api/analyze_folder")
 def api_analyze_folder(body: dict):
     folder = str(body.get("folder") or "").strip()

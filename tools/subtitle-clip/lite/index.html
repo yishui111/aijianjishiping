@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>最简剪辑台 · 字幕识别 → 剪辑</title>
+<style>
+  :root { --bd:#d8dce3; --fg:#1c2330; --mut:#68738a; --pri:#2563eb; --ok:#16a34a; --bad:#dc2626; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.6 "Microsoft YaHei",system-ui,sans-serif; color:var(--fg); background:#f4f6f9; }
+  .wrap { max-width:960px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:8px 0 2px; }
+  .sub { color:var(--mut); font-size:12px; margin-bottom:12px; }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
+  .card h2 { font-size:15px; margin:0 0 10px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  input[type=text], textarea { border:1px solid var(--bd); border-radius:8px; padding:8px 10px; font:inherit; }
+  input[type=text] { flex:1; min-width:240px; }
+  textarea { width:100%; min-height:64px; resize:vertical; }
+  button { border:0; border-radius:8px; padding:8px 16px; font:inherit; cursor:pointer; background:var(--pri); color:#fff; }
+  button.ghost { background:#eef1f6; color:var(--fg); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:99px; font-size:12px; background:#eef1f6; color:var(--mut); }
+  .pill.ok { background:#e7f6ec; color:var(--ok); }
+  .pill.bad { background:#fdeaea; color:var(--bad); }
+  .msg { margin-top:10px; font-size:13px; white-space:pre-wrap; word-break:break-all; }
+  .msg.err { color:var(--bad); }
+  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
+  th, td { border-bottom:1px solid var(--bd); padding:6px 8px; text-align:left; }
+  .clip { border:1px solid var(--bd); border-radius:8px; padding:8px; margin-top:8px; }
+  .clip video { width:100%; max-height:340px; background:#000; border-radius:6px; }
+  .clip .f { font-size:12px; color:var(--mut); word-break:break-all; margin:6px 0 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>最简剪辑台</h1>
+  <div class="sub">独立轻量页：调用本机分析 API（61812）完成「目录识别 → 台词 → 关键词/剧本剪 → 取片」。原工作台在 <a href="http://127.0.0.1:61810" target="_blank">61810</a>，本页端口 61814。</div>
+
+  <div class="card">
+    <b>服务状态：</b>
+    <span id="st_lite" class="pill">本页检测中…</span>
+    <span id="st_up" class="pill">分析 API 检测中…</span>
+    <button class="ghost" style="margin-left:auto" onclick="health()">刷新状态</button>
+  </div>
+
+  <div class="card">
+    <h2>① 识别台词（整个目录，首次需加载模型，可能数分钟）</h2>
+    <div class="row">
+      <input type="text" id="folder" placeholder="视频文件夹路径，例如 D:\素材\访谈">
+      <button id="btn_analyze" onclick="analyze()">开始识别</button>
+      <button class="ghost" onclick="listJsons()">查看已识别</button>
+    </div>
+    <div id="msg_analyze" class="msg"></div>
+    <div id="table_box"></div>
+  </div>
+
+  <div class="card">
+    <h2>② 剪辑（对上面已识别的目录）</h2>
+    <div class="row">
+      <input type="text" id="keywords" placeholder="关键词，逗号分隔，例如：钱,交付">
+      <button id="btn_kw" onclick="keywordCut()">关键词剪</button>
+    </div>
+    <div style="margin-top:10px">
+      <textarea id="script" placeholder="剧本：每行一句话，逐句去台词里找最相近的原话（语义匹配）"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="btn_script" onclick="scriptCut()">剧本剪</button>
+      </div>
+    </div>
+    <div id="msg_cut" class="msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>③ 成片 <button class="ghost" style="float:right" onclick="loadOutputs()">刷新</button></h2>
+    <div id="outputs"><span class="pill">暂无成片</span></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let folderLast = "";
+
+function setPill(el, ok, okText, badText) {
+  el.className = "pill " + (ok ? "ok" : "bad");
+  el.textContent = ok ? okText : badText;
+}
+
+async function health() {
+  try {
+    const r = await fetch("/health"); const d = await r.json();
+    setPill($("st_lite"), true, "本页 61814 运行中", "本页异常");
+    setPill($("st_up"), !!d.upstream_ok,
+      "分析 API 61812 已就绪", "分析 API 61812 未启动（先双击 启动.bat）");
+  } catch (e) { setPill($("st_lite"), false, "", "本页异常"); }
+}
+
+function busy(btn, on, text) { btn.disabled = on; if (text) btn.textContent = on ? text : btn.dataset.t; }
+
+async function analyze() {
+  const folder = $("folder").value.trim();
+  const msg = $("msg_analyze"); msg.className = "msg"; msg.textContent = "";
+  if (!folder) { msg.className = "msg err"; msg.textContent = "请先填视频文件夹路径"; return; }
+  folderLast = folder;
+  const btn = $("btn_analyze"); btn.dataset.t = btn.textContent;
+  busy(btn, true, "识别中…");
+  const t0 = Date.now();
+  const tick = setInterval(() => { msg.textContent = `识别中… 已用时 ${((Date.now()-t0)/1000)|0} 秒（首次需加载模型）`; }, 1000);
+  try {
+    const r = await fetch("/api/analyze_folder", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({folder})
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    msg.textContent = `识别完成（用时 ${((Date.now()-t0)/1000)|0} 秒）：共 ${d.total} 个视频\n` +
+      d.results.map(x => `・${x.video}：${x.lines} 句台词${x.cached ? "（已有缓存，未重新识别）" : ""}`).join("\n");
+    listJsons();
+  } catch (e) { msg.className = "msg err"; msg.textContent = "识别失败：" + e.message; }
+  clearInterval(tick); busy(btn, false);
+}
+
+async function listJsons() {
+  const folder = $("folder").value.trim() || folderLast;
+  const box = $("table_box");
+  if (!folder) { box.innerHTML = ""; return; }
+  try {
+    const r = await fetch("/api/list_jsons", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({folder})
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    box.innerHTML = d.jsons.length
+      ? `<table><tr><th>已识别的台词文件</th></tr>${d.jsons.map(n => `<tr><td>${n}</td></tr>`).join("")}</table>`
+      : `<div class="msg">该目录还没有台词 JSON</div>`;
+  } catch (e) { box.innerHTML = `<div class="msg err">读取失败：${e.message}</div>`; }
+}
+
+async function keywordCut() {
+  await cut("/api/keyword_cut", {folder: $("folder").value.trim(), keywords: $("keywords").value.trim()});
+}
+
+async function scriptCut() {
+  await cut("/api/script_cut", {folder: $("folder").value.trim(), script: $("script").value.trim()});
+}
+
+async function cut(url, body) {
+  const msg = $("msg_cut"); msg.className = "msg"; msg.textContent = "";
+  if (!body.folder) { msg.className = "msg err"; msg.textContent = "请先在①里填文件夹路径"; return; }
+  if (url.includes("keyword") && !body.keywords) { msg.className = "msg err"; msg.textContent = "关键词为空"; return; }
+  if (url.includes("script") && !body.script) { msg.className = "msg err"; msg.textContent = "剧本为空"; return; }
+  const btn = url.includes("keyword") ? $("btn_kw") : $("btn_script");
+  btn.dataset.t = btn.textContent; busy(btn, true, "剪辑中…");
+  try {
+    const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    const n = (d.outputs || []).length;
+    msg.textContent = `剪辑完成：命中 ${d.matched ?? (d.matches || []).length} 句，出片 ${n} 个` +
+      (d.matches && d.matches.length ? "\n" + d.matches.map(m => `・${m.video}：${m.text}`).join("\n") : "");
+    loadOutputs();
+  } catch (e) { msg.className = "msg err"; msg.textContent = "剪辑失败：" + e.message; }
+  busy(btn, false);
+}
+
+async function loadOutputs() {
+  const box = $("outputs");
+  try {
+    const r = await fetch("/api/outputs"); const d = await r.json();
+    const list = d.outputs || [];
+    box.innerHTML = list.length ? "" : `<span class="pill">暂无成片</span>`;
+    for (const o of list) {
+      const el = document.createElement("div");
+      el.className = "clip";
+      const src = `/media?f=${encodeURIComponent(o.file)}&dl=0`;
+      el.innerHTML = `<video controls preload="metadata" src="${src}"></video>
+        <div class="f">${o.file}</div>
+        <a href="/media?f=${encodeURIComponent(o.file)}&dl=1"><button class="ghost">⬇ 下载</button></a>`;
+      box.appendChild(el);
+    }
+  } catch (e) { box.innerHTML = `<div class="msg err">成片列表读取失败：${e.message}</div>`; }
+}
+
+health(); loadOutputs();
+</script>
+</body>
+</html>
