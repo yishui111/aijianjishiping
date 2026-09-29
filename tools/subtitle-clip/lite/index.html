@@ -17,8 +17,9 @@
   input[type=text], textarea { border:1px solid var(--bd); border-radius:8px; padding:8px 10px; font:inherit; }
   input[type=text] { flex:1; min-width:240px; }
   textarea { width:100%; min-height:64px; resize:vertical; }
-  button { border:0; border-radius:8px; padding:8px 16px; font:inherit; cursor:pointer; background:var(--pri); color:#fff; }
-  button.ghost { background:#eef1f6; color:var(--fg); }
+  button, a.dlbtn { border:0; border-radius:8px; padding:8px 16px; font:inherit; cursor:pointer;
+    background:var(--pri); color:#fff; text-decoration:none; display:inline-block; }
+  button.ghost, a.dlbtn.ghost { background:#eef1f6; color:var(--fg); }
   button:disabled { opacity:.5; cursor:not-allowed; }
   .pill { display:inline-block; padding:2px 10px; border-radius:99px; font-size:12px; background:#eef1f6; color:var(--mut); }
   .pill.ok { background:#e7f6ec; color:var(--ok); }
@@ -91,10 +92,31 @@ async function health() {
     setPill($("st_lite"), true, "本页 61814 运行中", "本页异常");
     setPill($("st_up"), !!d.upstream_ok,
       "分析 API 61812 已就绪", "分析 API 61812 未启动（先双击 启动.bat）");
-  } catch (e) { setPill($("st_lite"), false, "", "本页异常"); }
+  } catch (e) {
+    setPill($("st_lite"), false, "", "本页异常");
+    setPill($("st_up"), false, "", "分析 API 状态未知");
+  }
+}
+setInterval(health, 15000);   // 周期探测：61812 掉线时页面自动变红
+
+/* fetch 带超时：识别可能要加载模型很久，超时上限放宽到 60 分钟；
+   超时/中断时服务端多半仍在继续跑，结果会落盘，重试不会重复识别 */
+async function fetchJson(url, opts = {}, timeoutSec = 120) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutSec * 1000);
+  try {
+    const r = await fetch(url, { ...opts, signal: ctl.signal });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    return d;
+  } finally { clearTimeout(timer); }
 }
 
-function busy(btn, on, text) { btn.disabled = on; if (text) btn.textContent = on ? text : btn.dataset.t; }
+function busy(btn, on, text) {
+  btn.disabled = on;
+  if (on) { btn.dataset.t = btn.textContent; if (text !== undefined) btn.textContent = text; }
+  else if (btn.dataset.t) { btn.textContent = btn.dataset.t; }   // 恢复原始按钮文字
+}
 
 async function analyze() {
   const folder = $("folder").value.trim();
@@ -104,18 +126,21 @@ async function analyze() {
   const btn = $("btn_analyze"); btn.dataset.t = btn.textContent;
   busy(btn, true, "识别中…");
   const t0 = Date.now();
-  const tick = setInterval(() => { msg.textContent = `识别中… 已用时 ${((Date.now()-t0)/1000)|0} 秒（首次需加载模型）`; }, 1000);
+  const tick = setInterval(() => { msg.textContent = `识别中… 已用时 ${((Date.now()-t0)/1000)|0} 秒（首次需加载模型，请耐心等待）`; }, 1000);
   try {
-    const r = await fetch("/api/analyze_folder", {
+    const d = await fetchJson("/api/analyze_folder", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({folder})
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    }, 3600);
     msg.textContent = `识别完成（用时 ${((Date.now()-t0)/1000)|0} 秒）：共 ${d.total} 个视频\n` +
       d.results.map(x => `・${x.video}：${x.lines} 句台词${x.cached ? "（已有缓存，未重新识别）" : ""}`).join("\n");
     listJsons();
-  } catch (e) { msg.className = "msg err"; msg.textContent = "识别失败：" + e.message; }
+  } catch (e) {
+    msg.className = "msg err";
+    msg.textContent = e.name === "AbortError"
+      ? "等待超时/连接中断：后端可能仍在识别，稍后直接点「查看已识别」确认（识别结果已落盘的不会重复识别）。"
+      : "识别失败：" + e.message;
+  }
   clearInterval(tick); busy(btn, false);
 }
 
@@ -124,12 +149,10 @@ async function listJsons() {
   const box = $("table_box");
   if (!folder) { box.innerHTML = ""; return; }
   try {
-    const r = await fetch("/api/list_jsons", {
+    const d = await fetchJson("/api/list_jsons", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({folder})
     });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
     box.innerHTML = d.jsons.length
       ? `<table><tr><th>已识别的台词文件</th></tr>${d.jsons.map(n => `<tr><td>${n}</td></tr>`).join("")}</table>`
       : `<div class="msg">该目录还没有台词 JSON</div>`;
@@ -152,33 +175,40 @@ async function cut(url, body) {
   const btn = url.includes("keyword") ? $("btn_kw") : $("btn_script");
   btn.dataset.t = btn.textContent; busy(btn, true, "剪辑中…");
   try {
-    const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    const d = await fetchJson(url, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    }, 600);
     const n = (d.outputs || []).length;
     msg.textContent = `剪辑完成：命中 ${d.matched ?? (d.matches || []).length} 句，出片 ${n} 个` +
       (d.matches && d.matches.length ? "\n" + d.matches.map(m => `・${m.video}：${m.text}`).join("\n") : "");
     loadOutputs();
-  } catch (e) { msg.className = "msg err"; msg.textContent = "剪辑失败：" + e.message; }
+  } catch (e) {
+    msg.className = "msg err";
+    msg.textContent = e.name === "AbortError" ? "剪辑等待超时：请稍后点③「刷新」看成片是否已生成。" : "剪辑失败：" + e.message;
+  }
   busy(btn, false);
 }
 
 async function loadOutputs() {
   const box = $("outputs");
   try {
-    const r = await fetch("/api/outputs"); const d = await r.json();
+    const r = await fetch("/api/outputs");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
     const list = d.outputs || [];
     box.innerHTML = list.length ? "" : `<span class="pill">暂无成片</span>`;
     for (const o of list) {
       const el = document.createElement("div");
       el.className = "clip";
-      const src = `/media?f=${encodeURIComponent(o.file)}&dl=0`;
-      el.innerHTML = `<video controls preload="metadata" src="${src}"></video>
+      el.innerHTML = `<video controls preload="metadata" src="/media?f=${encodeURIComponent(o.file)}&dl=0"></video>
         <div class="f">${o.file}</div>
-        <a href="/media?f=${encodeURIComponent(o.file)}&dl=1"><button class="ghost">⬇ 下载</button></a>`;
+        <a class="dlbtn ghost" href="/media?f=${encodeURIComponent(o.file)}&dl=1">⬇ 下载</a>`;
       box.appendChild(el);
     }
-  } catch (e) { box.innerHTML = `<div class="msg err">成片列表读取失败：${e.message}</div>`; }
+  } catch (e) {
+    box.innerHTML = `<div class="msg err">成片列表读取失败：${e.message}（分析 API 没启动时属正常，先双击 启动.bat）</div>`;
+  }
 }
 
 health(); loadOutputs();

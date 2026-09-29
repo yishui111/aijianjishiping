@@ -10,6 +10,7 @@ if not exist "%ROOT%\runtime\Scripts\python.exe" (
 )
 echo Starting lite web UI on http://127.0.0.1:61814 ...
 echo Keep this window open. Close it to stop the lite web UI.
-start "" http://127.0.0.1:61814
+rem Open the browser after a short delay so the server is already listening.
+start "open-browser" /min cmd /c "timeout /t 3 /nobreak >nul & start "" http://127.0.0.1:61814"
 "%ROOT%\runtime\Scripts\python.exe" "%~dp0server.py"
 pause
